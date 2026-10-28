@@ -25,7 +25,7 @@ if (!context) {
 const ctx: CanvasRenderingContext2D = context;
 
 document.body.appendChild(canvas);
-
+document.getElementById("loading")?.remove();
 document.documentElement.style.margin = "0";
 document.documentElement.style.overflow = "hidden";
 
