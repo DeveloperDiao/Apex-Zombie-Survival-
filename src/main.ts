@@ -90,20 +90,45 @@ function defaultSave(): SaveData {
   };
 }
 
-function loadSave(): SaveData {
+// Keep the original save as a recovery copy.
+// Each account gets its own separate save.
+
+const ACCOUNT_SAVE_PREFIX =
+  "apex-zombie-survival-v3-player-";
+
+const LEGACY_BACKUP_KEY =
+  "apex-zombie-survival-v2-backup";
+
+const LEGACY_OWNER_KEY =
+  "apex-zombie-survival-v2-owner";
+
+function parseSave(raw: string | null): SaveData {
   const defaults = defaultSave();
+  if (!raw) return defaults;
 
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return defaults;
+    const data: unknown = JSON.parse(raw);
 
-    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") {
+      return defaults;
+    }
 
-    const number = (v: unknown, fallback: number) =>
-      typeof v === "number" &&
-      Number.isFinite(v) &&
-      v >= 0
-        ? Math.floor(v)
+    const record = data as Record<string, unknown>;
+
+    const rawUpgrades =
+      record.upgrades &&
+      typeof record.upgrades === "object"
+        ? record.upgrades as Record<string, unknown>
+        : {};
+
+    const number = (
+      value: unknown,
+      fallback: number
+    ): number =>
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0
+        ? Math.floor(value)
         : fallback;
 
     const upgrades = { ...defaults.upgrades };
@@ -111,17 +136,17 @@ function loadSave(): SaveData {
     for (const item of upgradeInfo) {
       upgrades[item.key] = Math.min(
         item.max,
-        number(data.upgrades?.[item.key], 0)
+        number(rawUpgrades[item.key], 0)
       );
     }
 
     return {
-      coins: number(data.coins, 0),
+      coins: number(record.coins, 0),
       campaignLevel: Math.max(
         1,
-        number(data.campaignLevel, 1)
+        number(record.campaignLevel, 1)
       ),
-      bestEndless: number(data.bestEndless, 0),
+      bestEndless: number(record.bestEndless, 0),
       upgrades
     };
   } catch {
@@ -129,17 +154,105 @@ function loadSave(): SaveData {
   }
 }
 
-let save = loadSave();
+let save = defaultSave();
+let activeSaveOwner: string | null = null;
+
+function playerSaveKey(playerId: string): string {
+  return `${ACCOUNT_SAVE_PREFIX}${playerId}`;
+}
+
+function activatePlayerSave(profile: {
+  id: string;
+  is_admin: boolean;
+}): void {
+  if (activeSaveOwner === profile.id) return;
+
+  activeSaveOwner = null;
+  save = defaultSave();
+
+  try {
+    const key = playerSaveKey(profile.id);
+    const existing = localStorage.getItem(key);
+
+    if (existing !== null) {
+      save = parseSave(existing);
+      activeSaveOwner = profile.id;
+      return;
+    }
+
+    const legacy = localStorage.getItem(SAVE_KEY);
+
+    if (
+      legacy !== null &&
+      localStorage.getItem(LEGACY_BACKUP_KEY) === null
+    ) {
+      localStorage.setItem(LEGACY_BACKUP_KEY, legacy);
+    }
+
+    const legacyOwner =
+      localStorage.getItem(LEGACY_OWNER_KEY);
+
+    if (
+      profile.is_admin &&
+      legacy !== null &&
+      (
+        legacyOwner === null ||
+        legacyOwner === profile.id
+      )
+    ) {
+      if (legacyOwner === null) {
+        localStorage.setItem(
+          LEGACY_OWNER_KEY,
+          profile.id
+        );
+      }
+
+      save = parseSave(legacy);
+    }
+
+    localStorage.setItem(
+      key,
+      JSON.stringify(save)
+    );
+
+    activeSaveOwner = profile.id;
+  } catch (error) {
+    activeSaveOwner = null;
+    save = defaultSave();
+
+    console.error(
+      "Unable to initialize account save",
+      error
+    );
+
+    showError(
+      "Account save could not be initialized. Storage may be full or disabled."
+    );
+  }
+}
 
 function persist(): void {
+  const profile = currentPlayer();
+
+  if (
+    !profile ||
+    activeSaveOwner !== profile.id
+  ) {
+    return;
+  }
+
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+    localStorage.setItem(
+      playerSaveKey(profile.id),
+      JSON.stringify(save)
+    );
   } catch (error) {
     console.warn("Unable to save", error);
   }
 }
 
-// CANVAS SETUP
+
+ // CANVAS SETUP
 
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
@@ -271,7 +384,12 @@ function upgradePrice(key: UpgradeKey): number {
 }
 
 function buyUpgrade(key: UpgradeKey): void {
-  if (!currentPlayer()) return;
+  if (
+    !currentPlayer() ||
+    activeSaveOwner !== currentPlayer()?.id
+  ) {
+    return;
+  }
 
   const item = upgradeInfo.find(u => u.key === key)!;
   const price = upgradePrice(key);
@@ -426,7 +544,12 @@ window.addEventListener("blur", () => {
 // TOUCH CONTROLS
 
 canvas.addEventListener("pointerdown", event => {
-  if (!currentPlayer()) return;
+  if (
+    !currentPlayer() ||
+    activeSaveOwner !== currentPlayer()?.id
+  ) {
+    return;
+  }
 
   if (gameScreen === "playing") {
     const pause = pauseButtonBounds();
@@ -496,7 +619,12 @@ canvas.addEventListener("pointercancel", releasePointer);
 // START GAME
 
 function startGame(mode: GameMode): void {
-  if (!currentPlayer()) return;
+  if (
+    !currentPlayer() ||
+    activeSaveOwner !== currentPlayer()?.id
+  ) {
+    return;
+  }
 
   gameMode = mode;
   gameScreen = "playing";
@@ -533,13 +661,20 @@ function startGame(mode: GameMode): void {
   resetJoystick();
 }
 
-// COIN BANKING
+ // COIN BANKING
 
 function awardCoins(amount: number): void {
   runCoins += amount;
 }
 
 function bankRunCoins(): void {
+  if (
+    !currentPlayer() ||
+    activeSaveOwner !== currentPlayer()?.id
+  ) {
+    return;
+  }
+
   save.coins += runCoins;
   persist();
 }
@@ -623,7 +758,13 @@ function spawnZombie(): void {
 // GAMEPLAY UPDATE
 
 function update(dt: number): void {
-  if (!currentPlayer()) return;
+  if (
+    !currentPlayer() ||
+    activeSaveOwner !== currentPlayer()?.id
+  ) {
+    return;
+  }
+
   if (gameScreen !== "playing") return;
 
   // SURVIVAL WAVE BREAK
@@ -882,7 +1023,7 @@ function update(dt: number): void {
   }
 }
 
-// DRAWING HELPERS
+ // DRAWING HELPERS
 
 function drawText(
   value: string,
@@ -990,7 +1131,11 @@ function drawPlayer(): void {
 
   ctx.fillStyle = "#53624a";
   ctx.beginPath();
-  ctx.arc(1, 0, 9, Math.PI * 0.55, Math.PI * 1.45);
+  ctx.arc(
+    1, 0, 9,
+    Math.PI * 0.55,
+    Math.PI * 1.45
+  );
   ctx.fill();
 
   // ARMS
@@ -1135,7 +1280,8 @@ function drawJoystick(): void {
     home.x,
     home.y,
     JOYSTICK_RADIUS,
-    0, Math.PI * 2
+    0,
+    Math.PI * 2
   );
   ctx.fill();
   ctx.stroke();
@@ -1147,12 +1293,13 @@ function drawJoystick(): void {
     home.x + joystick.dx * JOYSTICK_RADIUS,
     home.y + joystick.dy * JOYSTICK_RADIUS,
     22,
-    0, Math.PI * 2
+    0,
+    Math.PI * 2
   );
   ctx.fill();
 }
 
-// BUTTONS
+ // BUTTONS
 
 function addButton(
   label: string,
@@ -1263,6 +1410,13 @@ function drawMenu(): void {
     "UPGRADE SHOP",
     startY + 120,
     () => {
+      if (
+        !currentPlayer() ||
+        activeSaveOwner !== currentPlayer()?.id
+      ) {
+        return;
+      }
+
       shopReturn = "menu";
       gameScreen = "shop";
     }
@@ -1371,7 +1525,7 @@ function drawShop(): void {
   );
 }
 
-// CAMPAIGN COMPLETION SCREEN
+ // CAMPAIGN COMPLETION SCREEN
 
 function drawComplete(): void {
   drawPanel("LEVEL COMPLETED!");
@@ -1602,7 +1756,7 @@ function drawConfirmExit(): void {
   );
 }
 
-// GAMEPLAY DISPLAY
+ // GAMEPLAY DISPLAY
 
 function drawGame(): void {
   drawBackground();
@@ -1619,7 +1773,8 @@ function drawGame(): void {
       bullet.x,
       bullet.y,
       4,
-      0, Math.PI * 2
+      0,
+      Math.PI * 2
     );
     ctx.fill();
   }
@@ -1701,8 +1856,19 @@ function drawGame(): void {
   );
 
   ctx.fillStyle = "#101510";
-  ctx.fillRect(pause.x + 14, pause.y + 11, 6, 20);
-  ctx.fillRect(pause.x + 28, pause.y + 11, 6, 20);
+  ctx.fillRect(
+    pause.x + 14,
+    pause.y + 11,
+    6,
+    20
+  );
+
+  ctx.fillRect(
+    pause.x + 28,
+    pause.y + 11,
+    6,
+    20
+  );
 
   drawJoystick();
 
@@ -1737,7 +1903,7 @@ function drawGame(): void {
   }
 }
 
-// SCREEN RENDERING
+ // SCREEN RENDERING
 
 function draw(): void {
   buttons = [];
@@ -1826,18 +1992,56 @@ requestAnimationFrame(frame);
 // SUPABASE AUTHENTICATION INTEGRATION
 
 onProfileChange(profile => {
-  if (!profile) {
-    gameScreen = "menu";
-    resetJoystick();
-    keys.clear();
-    zombies.length = 0;
-    bullets.length = 0;
-    runCoins = 0;
+  // Reset active gameplay when the signed-in
+  // account changes or signs out.
+
+  const nextPlayerId = profile?.id ?? null;
+
+  if (nextPlayerId === activeSaveOwner) {
+    return;
   }
+
+  gameScreen = "menu";
+  resetJoystick();
+  keys.clear();
+
+  zombies.length = 0;
+  bullets.length = 0;
+
+  runCoins = 0;
+  waveKills = 0;
+  kills = 0;
+  waveBreak = 0;
+  waveTime = 0;
+
+  lastTime = 0;
+
+  // Remove the previous account's saved
+  // progress from active game memory.
+
+  save = defaultSave();
+  activeSaveOwner = null;
+
+  // Signed-out users have no active save.
+
+  if (!profile) {
+    return;
+  }
+
+  // Load or initialize the account-specific save.
+  // Administrator accounts can migrate the
+  // original shared save when eligible.
+
+  activatePlayerSave(profile);
 });
+
+// INITIALIZE LOGIN SYSTEM
 
 void initializeAuth()
   .then(() => {
+    // Check periodically whether the active
+    // account has been locked by an administrator.
+
     startAccountLockMonitor();
   })
   .catch(showError);
