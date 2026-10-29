@@ -38,8 +38,45 @@
       color: white;
       font: bold 18px Arial, sans-serif;
       text-align: center;
+      padding: 20px;
+      width: 90%;
+      box-sizing: border-box;
+      z-index: 999;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
   </style>
+
+  <script>
+    function showStartupError(message) {
+      const loading = document.getElementById("loading");
+
+      if (loading) {
+        loading.style.color = "#ff7777";
+        loading.textContent =
+          "APEX STARTUP ERROR\n\n" + message;
+      }
+    }
+
+    window.addEventListener("error", function(event) {
+      showStartupError(
+        event.message || "Unknown JavaScript error"
+      );
+    });
+
+    window.addEventListener(
+      "unhandledrejection",
+      function(event) {
+        const reason = event.reason;
+
+        showStartupError(
+          reason && reason.message
+            ? reason.message
+            : String(reason)
+        );
+      }
+    );
+  </script>
 </head>
 
 <body>
