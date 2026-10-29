@@ -58,36 +58,11 @@ const upgradeInfo: {
   price: number;
   max: number;
 }[] = [
-  {
-    key: "health",
-    name: "Health +20",
-    price: 100,
-    max: 10
-  },
-  {
-    key: "armor",
-    name: "Armor +1",
-    price: 150,
-    max: 8
-  },
-  {
-    key: "stamina",
-    name: "Speed +10%",
-    price: 125,
-    max: 8
-  },
-  {
-    key: "damage",
-    name: "Damage +1",
-    price: 200,
-    max: 10
-  },
-  {
-    key: "fireRate",
-    name: "Fire Rate",
-    price: 250,
-    max: 8
-  }
+  { key: "health", name: "Health +20", price: 100, max: 10 },
+  { key: "armor", name: "Armor +1", price: 150, max: 8 },
+  { key: "stamina", name: "Speed +10%", price: 125, max: 8 },
+  { key: "damage", name: "Damage +1", price: 200, max: 10 },
+  { key: "fireRate", name: "Fire Rate", price: 250, max: 8 }
 ];
 
 function defaultSave(): SaveData {
@@ -110,7 +85,6 @@ function loadSave(): SaveData {
 
   try {
     const raw = localStorage.getItem(SAVE_KEY);
-
     if (!raw) return defaults;
 
     const saved = JSON.parse(raw);
@@ -126,7 +100,6 @@ function loadSave(): SaveData {
       ) {
         return Math.floor(value);
       }
-
       return fallback;
     };
 
@@ -149,7 +122,7 @@ function loadSave(): SaveData {
       upgrades
     };
   } catch (error) {
-    console.warn("Could not load save:", error);
+    console.warn("Save load failed:", error);
     return defaults;
   }
 }
@@ -167,28 +140,69 @@ function persist(): void {
   }
 }
 
+// CANVAS SETUP
+
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
 
 if (!context) {
-  throw new Error("Canvas 2D is unavailable");
+  throw new Error("Canvas 2D unavailable");
 }
 
 const ctx: CanvasRenderingContext2D = context;
 
-document.body.appendChild(canvas);
-
 document.documentElement.style.margin = "0";
 document.documentElement.style.overflow = "hidden";
-
 document.body.style.margin = "0";
-document.body.style.background = "#101510";
 document.body.style.overflow = "hidden";
+document.body.style.background = "#101510";
 
+canvas.id = "apex-game-canvas";
+canvas.style.position = "fixed";
+canvas.style.inset = "0";
 canvas.style.display = "block";
 canvas.style.width = "100vw";
 canvas.style.height = "100dvh";
 canvas.style.touchAction = "none";
+canvas.style.zIndex = "10";
+
+document.body.appendChild(canvas);
+
+// LOADING SCREEN FIX
+
+function removeLoadingScreen(): void {
+  const selectors = [
+    "#loading",
+    "#loader",
+    "#loading-screen",
+    ".loading",
+    ".loading-screen",
+    ".loader"
+  ];
+
+  for (const selector of selectors) {
+    document.querySelectorAll(selector).forEach(element => {
+      if (element !== canvas) {
+        element.remove();
+      }
+    });
+  }
+
+  // Remove text-only loading elements left by index.html.
+  document.querySelectorAll(
+    "body > div, body > p, body > h1, body > h2"
+  ).forEach(element => {
+    if (
+      element !== canvas &&
+      element.textContent?.trim() ===
+        "Loading APEX Zombie Survival..."
+    ) {
+      element.remove();
+    }
+  });
+}
+
+removeLoadingScreen();
 
 let width = 0;
 let height = 0;
@@ -208,7 +222,6 @@ const bullets: Bullet[] = [];
 
 let gameScreen: GameScreen = "menu";
 let gameMode: GameMode = "campaign";
-
 let shopReturn: "menu" | "complete" = "menu";
 
 let kills = 0;
@@ -218,7 +231,6 @@ let targetKills = 15;
 let difficulty = 1;
 let elapsed = 0;
 let noDamage = true;
-
 let spawnTimer = 0;
 let shootTimer = 0;
 let invulnerable = 0;
@@ -239,15 +251,14 @@ const joystick = {
 
 const JOYSTICK_RADIUS = 48;
 
+// CHARACTER UPGRADES
+
 function maxHealth(): number {
   return 100 + save.upgrades.health * 20;
 }
 
 function movementSpeed(): number {
-  return (
-    190 *
-    (1 + save.upgrades.stamina * 0.1)
-  );
+  return 190 * (1 + save.upgrades.stamina * 0.1);
 }
 
 function bulletDamage(): number {
@@ -262,36 +273,29 @@ function fireDelay(): number {
 }
 
 function upgradePrice(key: UpgradeKey): number {
-  const item = upgradeInfo.find(
-    upgrade => upgrade.key === key
-  );
-
+  const item = upgradeInfo.find(u => u.key === key);
   if (!item) return Infinity;
 
   return Math.floor(
-    item.price *
-    Math.pow(1.5, save.upgrades[key])
+    item.price * Math.pow(1.5, save.upgrades[key])
   );
 }
 
 function buyUpgrade(key: UpgradeKey): void {
-  const item = upgradeInfo.find(
-    upgrade => upgrade.key === key
-  );
-
+  const item = upgradeInfo.find(u => u.key === key);
   if (!item) return;
-
-  if (save.upgrades[key] >= item.max) return;
 
   const price = upgradePrice(key);
 
+  if (save.upgrades[key] >= item.max) return;
   if (save.coins < price) return;
 
   save.coins -= price;
   save.upgrades[key]++;
-
   persist();
 }
+
+// SCREEN SIZE
 
 function resize(): void {
   const oldWidth = width;
@@ -333,6 +337,8 @@ function resize(): void {
 window.addEventListener("resize", resize);
 resize();
 
+// MOBILE JOYSTICK
+
 function joystickHome() {
   return {
     x: 83,
@@ -347,15 +353,11 @@ function resetJoystick(): void {
   joystick.dy = 0;
 }
 
-function updateJoystick(
-  x: number,
-  y: number
-): void {
+function updateJoystick(x: number, y: number): void {
   const home = joystickHome();
 
   const dx = x - home.x;
   const dy = y - home.y;
-
   const distance = Math.hypot(dx, dy);
 
   const factor = Math.min(
@@ -363,11 +365,8 @@ function updateJoystick(
     JOYSTICK_RADIUS / Math.max(1, distance)
   );
 
-  joystick.dx =
-    dx * factor / JOYSTICK_RADIUS;
-
-  joystick.dy =
-    dy * factor / JOYSTICK_RADIUS;
+  joystick.dx = dx * factor / JOYSTICK_RADIUS;
+  joystick.dy = dy * factor / JOYSTICK_RADIUS;
 
   if (distance < 8) {
     joystick.dx = 0;
@@ -413,11 +412,7 @@ canvas.addEventListener("pointerdown", event => {
     joystick.active = true;
     joystick.pointerId = event.pointerId;
 
-    updateJoystick(
-      event.clientX,
-      event.clientY
-    );
-
+    updateJoystick(event.clientX, event.clientY);
     canvas.setPointerCapture(event.pointerId);
   }
 });
@@ -427,10 +422,7 @@ canvas.addEventListener("pointermove", event => {
     joystick.active &&
     joystick.pointerId === event.pointerId
   ) {
-    updateJoystick(
-      event.clientX,
-      event.clientY
-    );
+    updateJoystick(event.clientX, event.clientY);
   }
 });
 
@@ -443,13 +435,14 @@ function releasePointer(event: PointerEvent): void {
 canvas.addEventListener("pointerup", releasePointer);
 canvas.addEventListener("pointercancel", releasePointer);
 
+// GAME MODES
+
 function startGame(selectedMode: GameMode): void {
   gameMode = selectedMode;
   gameScreen = "playing";
 
   player.x = width / 2;
   player.y = height / 2;
-
   player.maxHp = maxHealth();
   player.hp = player.maxHp;
   player.angle = -Math.PI / 2;
@@ -461,12 +454,10 @@ function startGame(selectedMode: GameMode): void {
   runCoins = 0;
   waveKills = 0;
   elapsed = 0;
-
   spawnTimer = 0;
   shootTimer = 0;
   invulnerable = 0;
   lastMilestone = 0;
-
   noDamage = true;
 
   difficulty =
@@ -482,7 +473,6 @@ function startGame(selectedMode: GameMode): void {
 function awardCoins(amount: number): void {
   save.coins += amount;
   runCoins += amount;
-
   persist();
 }
 
@@ -492,11 +482,9 @@ function finishCampaign(): void {
     : 0;
 
   levelReward = difficulty * 25 + bonus;
-
   awardCoins(levelReward);
 
   save.campaignLevel++;
-
   persist();
 
   gameScreen = "complete";
@@ -515,6 +503,8 @@ function endGame(): void {
     persist();
   }
 }
+
+// ZOMBIE SPAWNING
 
 function spawnZombie(): void {
   const side = Math.floor(Math.random() * 4);
@@ -543,9 +533,7 @@ function spawnZombie(): void {
       : 0;
 
   const hp =
-    1 +
-    Math.floor(difficulty / 3) +
-    kind;
+    1 + Math.floor(difficulty / 3) + kind;
 
   zombies.push({
     x,
@@ -558,50 +546,31 @@ function spawnZombie(): void {
   });
 }
 
+// GAME UPDATE
+
 function update(dt: number): void {
   if (gameScreen !== "playing") return;
 
   elapsed += dt;
 
   if (gameMode === "endless") {
-    difficulty =
-      1 + Math.floor(elapsed / 35);
+    difficulty = 1 + Math.floor(elapsed / 35);
 
-    const milestone = Math.floor(
-      elapsed / 30
-    );
+    const milestone = Math.floor(elapsed / 30);
 
     if (milestone > lastMilestone) {
       lastMilestone = milestone;
-
-      awardCoins(
-        20 + milestone * 10
-      );
+      awardCoins(20 + milestone * 10);
     }
   }
 
   let dx = 0;
   let dy = 0;
 
-  if (
-    keys.has("a") ||
-    keys.has("arrowleft")
-  ) dx--;
-
-  if (
-    keys.has("d") ||
-    keys.has("arrowright")
-  ) dx++;
-
-  if (
-    keys.has("w") ||
-    keys.has("arrowup")
-  ) dy--;
-
-  if (
-    keys.has("s") ||
-    keys.has("arrowdown")
-  ) dy++;
+  if (keys.has("a") || keys.has("arrowleft")) dx--;
+  if (keys.has("d") || keys.has("arrowright")) dx++;
+  if (keys.has("w") || keys.has("arrowup")) dy--;
+  if (keys.has("s") || keys.has("arrowdown")) dy++;
 
   if (joystick.active) {
     dx = joystick.dx;
@@ -614,32 +583,20 @@ function update(dt: number): void {
     const strength = Math.min(1, length);
 
     player.x +=
-      dx / length *
-      movementSpeed() *
-      strength *
-      dt;
+      dx / length * movementSpeed() * strength * dt;
 
     player.y +=
-      dy / length *
-      movementSpeed() *
-      strength *
-      dt;
+      dy / length * movementSpeed() * strength * dt;
   }
 
   player.x = Math.max(
     player.radius,
-    Math.min(
-      width - player.radius,
-      player.x
-    )
+    Math.min(width - player.radius, player.x)
   );
 
   player.y = Math.max(
     player.radius,
-    Math.min(
-      height - player.radius,
-      player.y
-    )
+    Math.min(height - player.radius, player.y)
   );
 
   spawnTimer -= dt;
@@ -655,10 +612,7 @@ function update(dt: number): void {
 
   shootTimer -= dt;
 
-  if (
-    shootTimer <= 0 &&
-    zombies.length > 0
-  ) {
+  if (shootTimer <= 0 && zombies.length > 0) {
     let nearest: Zombie | null = null;
     let bestDistance = Infinity;
 
@@ -686,12 +640,8 @@ function update(dt: number): void {
       player.angle = angle;
 
       bullets.push({
-        x:
-          player.x +
-          Math.cos(angle) * 19,
-        y:
-          player.y +
-          Math.sin(angle) * 19,
+        x: player.x + Math.cos(angle) * 19,
+        y: player.y + Math.sin(angle) * 19,
         vx: Math.cos(angle) * 430,
         vy: Math.sin(angle) * 430,
         life: 1.5,
@@ -702,10 +652,7 @@ function update(dt: number): void {
     }
   }
 
-  invulnerable = Math.max(
-    0,
-    invulnerable - dt
-  );
+  invulnerable = Math.max(0, invulnerable - dt);
 
   for (const zombie of zombies) {
     if (zombie.hp <= 0) continue;
@@ -716,14 +663,10 @@ function update(dt: number): void {
     );
 
     zombie.x +=
-      Math.cos(angle) *
-      zombie.speed *
-      dt;
+      Math.cos(angle) * zombie.speed * dt;
 
     zombie.y +=
-      Math.sin(angle) *
-      zombie.speed *
-      dt;
+      Math.sin(angle) * zombie.speed * dt;
 
     const distanceToPlayer = Math.hypot(
       zombie.x - player.x,
@@ -770,19 +713,14 @@ function update(dt: number): void {
         bullet.y - zombie.y
       );
 
-      if (
-        distance < zombie.radius + 4
-      ) {
+      if (distance < zombie.radius + 4) {
         zombie.hp -= bullet.damage;
         bullet.life = 0;
 
         if (zombie.hp <= 0) {
           kills++;
           waveKills++;
-
-          awardCoins(
-            zombie.kind ? 10 : 5
-          );
+          awardCoins(zombie.kind ? 10 : 5);
         }
 
         break;
@@ -790,21 +728,13 @@ function update(dt: number): void {
     }
   }
 
-  for (
-    let i = zombies.length - 1;
-    i >= 0;
-    i--
-  ) {
+  for (let i = zombies.length - 1; i >= 0; i--) {
     if (zombies[i].hp <= 0) {
       zombies.splice(i, 1);
     }
   }
 
-  for (
-    let i = bullets.length - 1;
-    i >= 0;
-    i--
-  ) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
     const bullet = bullets[i];
 
     if (
@@ -826,6 +756,8 @@ function update(dt: number): void {
   }
 }
 
+// DRAWING HELPERS
+
 function drawText(
   value: string,
   x: number,
@@ -837,7 +769,6 @@ function drawText(
   ctx.fillStyle = color;
   ctx.font = `bold ${size}px Arial`;
   ctx.textAlign = align;
-
   ctx.fillText(value, x, y);
 }
 
@@ -865,7 +796,6 @@ function drawBackground(): void {
 
 function drawPlayer(): void {
   ctx.save();
-
   ctx.translate(player.x, player.y);
   ctx.rotate(player.angle);
 
@@ -877,16 +807,10 @@ function drawPlayer(): void {
   }
 
   ctx.fillStyle = "#0a110c";
-
   ctx.beginPath();
   ctx.ellipse(
-    2,
-    5,
-    18,
-    14,
-    0,
-    0,
-    Math.PI * 2
+    2, 5, 18, 14,
+    0, 0, Math.PI * 2
   );
   ctx.fill();
 
@@ -912,7 +836,6 @@ function drawPlayer(): void {
 
 function drawZombie(zombie: Zombie): void {
   ctx.save();
-
   ctx.translate(zombie.x, zombie.y);
 
   const angle = Math.atan2(
@@ -924,17 +847,12 @@ function drawZombie(zombie: Zombie): void {
 
   ctx.fillStyle = "#0a100d";
   ctx.beginPath();
-
   ctx.ellipse(
-    2,
-    4,
+    2, 4,
     zombie.radius + 3,
     zombie.radius,
-    0,
-    0,
-    Math.PI * 2
+    0, 0, Math.PI * 2
   );
-
   ctx.fill();
 
   ctx.fillStyle = zombie.kind
@@ -943,11 +861,9 @@ function drawZombie(zombie: Zombie): void {
 
   ctx.beginPath();
   ctx.arc(
-    0,
-    0,
+    0, 0,
     zombie.radius,
-    0,
-    Math.PI * 2
+    0, Math.PI * 2
   );
   ctx.fill();
 
@@ -961,11 +877,9 @@ function drawZombie(zombie: Zombie): void {
   ctx.restore();
 
   if (zombie.maxHp > 1) {
-    const barWidth =
-      zombie.radius * 2 + 6;
+    const barWidth = zombie.radius * 2 + 6;
 
     ctx.fillStyle = "#382626";
-
     ctx.fillRect(
       zombie.x - barWidth / 2,
       zombie.y - zombie.radius - 13,
@@ -974,7 +888,6 @@ function drawZombie(zombie: Zombie): void {
     );
 
     ctx.fillStyle = "#e07560";
-
     ctx.fillRect(
       zombie.x - barWidth / 2,
       zombie.y - zombie.radius - 13,
@@ -989,12 +902,8 @@ function drawZombie(zombie: Zombie): void {
 function drawJoystick(): void {
   const home = joystickHome();
 
-  ctx.fillStyle =
-    "rgba(255,255,255,0.1)";
-
-  ctx.strokeStyle =
-    "rgba(255,255,255,0.4)";
-
+  ctx.fillStyle = "rgba(255,255,255,0.1)";
+  ctx.strokeStyle = "rgba(255,255,255,0.4)";
   ctx.lineWidth = 2;
 
   ctx.beginPath();
@@ -1008,55 +917,35 @@ function drawJoystick(): void {
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle =
-    "rgba(225,194,110,0.8)";
-
+  ctx.fillStyle = "rgba(225,194,110,0.8)";
   ctx.beginPath();
-
   ctx.arc(
-    home.x +
-      joystick.dx * JOYSTICK_RADIUS,
-    home.y +
-      joystick.dy * JOYSTICK_RADIUS,
+    home.x + joystick.dx * JOYSTICK_RADIUS,
+    home.y + joystick.dy * JOYSTICK_RADIUS,
     22,
     0,
     Math.PI * 2
   );
-
   ctx.fill();
 }
+
+// MENU BUTTONS
 
 function addButton(
   label: string,
   y: number,
   action: () => void
 ): void {
-  const buttonWidth = Math.min(
-    width - 40,
-    300
-  );
-
+  const buttonWidth = Math.min(width - 40, 300);
   const buttonHeight = 46;
   const x = (width - buttonWidth) / 2;
 
   ctx.fillStyle = "#a78439";
-
-  ctx.fillRect(
-    x,
-    y,
-    buttonWidth,
-    buttonHeight
-  );
+  ctx.fillRect(x, y, buttonWidth, buttonHeight);
 
   ctx.strokeStyle = "#e7c76c";
   ctx.lineWidth = 2;
-
-  ctx.strokeRect(
-    x,
-    y,
-    buttonWidth,
-    buttonHeight
-  );
+  ctx.strokeRect(x, y, buttonWidth, buttonHeight);
 
   drawText(
     label,
@@ -1078,15 +967,8 @@ function addButton(
 }
 
 function drawPanel(title: string): void {
-  ctx.fillStyle =
-    "rgba(5,12,8,0.94)";
-
-  ctx.fillRect(
-    0,
-    0,
-    width,
-    height
-  );
+  ctx.fillStyle = "rgba(5,12,8,0.94)";
+  ctx.fillRect(0, 0, width, height);
 
   drawText(
     title,
@@ -1097,6 +979,8 @@ function drawPanel(title: string): void {
     "center"
   );
 }
+
+// MAIN MENU
 
 function drawMenu(): void {
   drawPanel("APEX ZOMBIE SURVIVAL");
@@ -1155,6 +1039,8 @@ function drawMenu(): void {
   );
 }
 
+// UPGRADE SHOP
+
 function drawShop(): void {
   drawPanel("SURVIVOR UPGRADE SHOP");
 
@@ -1191,15 +1077,15 @@ function drawShop(): void {
     "BACK",
     Math.min(
       height - 65,
-      startY +
-        upgradeInfo.length * gap +
-        5
+      startY + upgradeInfo.length * gap + 5
     ),
     () => {
       gameScreen = shopReturn;
     }
   );
 }
+
+// CAMPAIGN COMPLETE
 
 function drawComplete(): void {
   drawPanel("LEVEL COMPLETED!");
@@ -1242,10 +1128,7 @@ function drawComplete(): void {
     "center"
   );
 
-  const startY = Math.max(
-    270,
-    height / 2
-  );
+  const startY = Math.max(270, height / 2);
 
   addButton(
     "NEXT LEVEL",
@@ -1270,6 +1153,8 @@ function drawComplete(): void {
     }
   );
 }
+
+// GAME OVER
 
 function drawGameOver(): void {
   drawPanel("GAME OVER");
@@ -1314,10 +1199,7 @@ function drawGameOver(): void {
     );
   }
 
-  const startY = Math.max(
-    270,
-    height / 2
-  );
+  const startY = Math.max(270, height / 2);
 
   addButton(
     "RETRY",
@@ -1333,6 +1215,8 @@ function drawGameOver(): void {
     }
   );
 }
+
+// GAMEPLAY DISPLAY
 
 function drawGame(): void {
   drawBackground();
@@ -1357,15 +1241,8 @@ function drawGame(): void {
 
   drawPlayer();
 
-  ctx.fillStyle =
-    "rgba(8,14,10,0.84)";
-
-  ctx.fillRect(
-    0,
-    0,
-    width,
-    115
-  );
+  ctx.fillStyle = "rgba(8,14,10,0.84)";
+  ctx.fillRect(0, 0, width, 115);
 
   drawText(
     "APEX SURVIVAL",
@@ -1382,10 +1259,7 @@ function drawGame(): void {
     13
   );
 
-  const barWidth = Math.min(
-    width - 30,
-    245
-  );
+  const barWidth = Math.min(width - 30, 245);
 
   ctx.fillStyle = "#502525";
   ctx.fillRect(15, 57, barWidth, 12);
@@ -1398,9 +1272,7 @@ function drawGame(): void {
   ctx.fillRect(
     15,
     57,
-    barWidth *
-      player.hp /
-      player.maxHp,
+    barWidth * player.hp / player.maxHp,
     12
   );
 
@@ -1458,11 +1330,10 @@ function draw(): void {
   }
 }
 
+// ERROR HANDLING
+
 function showError(error: unknown): void {
-  console.error(
-    "APEX Zombie Survival error:",
-    error
-  );
+  console.error("APEX Zombie Survival error:", error);
 
   const message = document.createElement("pre");
 
@@ -1482,6 +1353,8 @@ function showError(error: unknown): void {
 
   document.body.appendChild(message);
 }
+
+// MAIN GAME LOOP
 
 function frame(time: number): void {
   const dt = Math.min(
