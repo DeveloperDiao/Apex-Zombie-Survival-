@@ -5,6 +5,8 @@ export type PlayerProfile = {
   id: string;
   username: string;
   is_admin: boolean;
+  is_disabled: boolean;
+  coins: number;
 };
 
 export async function login(
@@ -28,13 +30,20 @@ export async function login(
   const { data: profile, error: profileError } =
     await supabase
       .from("player_profiles")
-      .select("id, username, is_admin")
+      .select(
+        "id, username, is_admin, is_disabled, coins"
+      )
       .eq("id", data.user.id)
       .single();
 
   if (profileError || !profile) {
     await supabase.auth.signOut();
     throw new Error("Player profile not found");
+  }
+
+  if (profile.is_disabled) {
+    await supabase.auth.signOut();
+    throw new Error("LOG-in-ERROR:1149");
   }
 
   return profile as PlayerProfile;
@@ -50,7 +59,8 @@ export async function logout() {
 
 export async function getCurrentProfile():
   Promise<PlayerProfile | null> {
-  const { data, error } = await supabase.auth.getUser();
+  const { data, error } =
+    await supabase.auth.getUser();
 
   if (error || !data.user) {
     return null;
@@ -59,11 +69,18 @@ export async function getCurrentProfile():
   const { data: profile, error: profileError } =
     await supabase
       .from("player_profiles")
-      .select("id, username, is_admin")
+      .select(
+        "id, username, is_admin, is_disabled, coins"
+      )
       .eq("id", data.user.id)
       .single();
 
   if (profileError || !profile) {
+    return null;
+  }
+
+  if (profile.is_disabled) {
+    await supabase.auth.signOut();
     return null;
   }
 
