@@ -11,6 +11,10 @@ let activeProfile: PlayerProfile | null = null;
 let changeListener:
   ((profile: PlayerProfile | null) => void) | null = null;
 
+let accountCheckRunning = false;
+let accountMonitorStarted = false;
+let sessionVersion = 0;
+
 export function onProfileChange(
   listener: (profile: PlayerProfile | null) => void
 ): void {
@@ -22,17 +26,33 @@ export function currentPlayer(): PlayerProfile | null {
   return activeProfile;
 }
 
+function setActiveProfile(
+  profile: PlayerProfile | null
+): void {
+  activeProfile = profile;
+  changeListener?.(profile);
+}
+
 export async function signOutPlayer(): Promise<void> {
+  sessionVersion++;
+
   await logout();
 
-  activeProfile = null;
-  changeListener?.(null);
-
+  setActiveProfile(null);
   showLogin();
 }
 
-function showLogin(): void {
+function showLogin(
+  initialMessage = ""
+): void {
   if (document.getElementById("apex-login")) {
+    const existingMessage =
+      document.getElementById("apex-login-message");
+
+    if (existingMessage && initialMessage) {
+      existingMessage.textContent = initialMessage;
+    }
+
     return;
   }
 
@@ -103,7 +123,9 @@ function showLogin(): void {
 
   const message = document.createElement("p");
 
+  message.id = "apex-login-message";
   message.setAttribute("role", "status");
+  message.textContent = initialMessage;
 
   message.style.cssText =
     "font-size:13px;" +
@@ -152,23 +174,33 @@ function showLogin(): void {
     submit.disabled = true;
     message.textContent = "Signing in...";
 
+    const attemptVersion = ++sessionVersion;
+
     try {
       const profile = await login(
         email.value.trim(),
         password.value
       );
 
-      activeProfile = profile;
+      if (attemptVersion !== sessionVersion) {
+        return;
+      }
 
-      changeListener?.(profile);
+      if (profile.is_disabled) {
+        await logout();
+        throw new Error("LOG-in-ERROR:1149");
+      }
 
+      setActiveProfile(profile);
       overlay.remove();
 
     } catch (error) {
-      message.textContent =
-        error instanceof Error
-          ? error.message
-          : "Unable to sign in";
+      if (attemptVersion === sessionVersion) {
+        message.textContent =
+          error instanceof Error
+            ? error.message
+            : "Unable to sign in";
+      }
 
     } finally {
       submit.disabled = false;
@@ -179,13 +211,17 @@ function showLogin(): void {
 export async function initializeAuth(): Promise<void> {
   showLogin();
 
+  const checkVersion = sessionVersion;
+
   try {
     const profile = await getCurrentProfile();
 
-    if (profile) {
-      activeProfile = profile;
+    if (checkVersion !== sessionVersion) {
+      return;
+    }
 
-      changeListener?.(profile);
+    if (profile && !profile.is_disabled) {
+      setActiveProfile(profile);
 
       document
         .getElementById("apex-login")
@@ -198,4 +234,56 @@ export async function initializeAuth(): Promise<void> {
       error
     );
   }
+}
+
+export function startAccountLockMonitor(): void {
+  if (accountMonitorStarted) {
+    return;
+  }
+
+  accountMonitorStarted = true;
+
+  window.setInterval(async () => {
+    if (!activeProfile || accountCheckRunning) {
+      return;
+    }
+
+    accountCheckRunning = true;
+
+    const checkVersion = sessionVersion;
+    const checkedPlayerId = activeProfile.id;
+
+    try {
+      const profile = await getCurrentProfile();
+
+      if (
+        checkVersion !== sessionVersion ||
+        activeProfile?.id !== checkedPlayerId
+      ) {
+        return;
+      }
+
+      if (!profile || profile.is_disabled) {
+        sessionVersion++;
+
+        setActiveProfile(null);
+
+        showLogin(
+          "LOG-in-ERROR:1149"
+        );
+
+        return;
+      }
+
+      setActiveProfile(profile);
+
+    } catch (error) {
+      console.warn(
+        "Account status check failed:",
+        error
+      );
+    } finally {
+      accountCheckRunning = false;
+    }
+  }, 10000);
 }
