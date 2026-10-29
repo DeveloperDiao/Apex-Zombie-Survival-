@@ -3,7 +3,8 @@ import {
   initializeAuth,
   onProfileChange,
   currentPlayer,
-  signOutPlayer
+  signOutPlayer,
+  startAccountLockMonitor
 } from "./auth-ui";
 
 type Zombie = {
@@ -1835,4 +1836,8 @@ onProfileChange(profile => {
   }
 });
 
-void initializeAuth().catch(showError);
+void initializeAuth()
+  .then(() => {
+    startAccountLockMonitor();
+  })
+  .catch(showError);
