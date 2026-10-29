@@ -1,3 +1,11 @@
+
+import {
+  initializeAuth,
+  onProfileChange,
+  currentPlayer,
+  signOutPlayer
+} from "./auth-ui";
+
 type Zombie = {
   x: number;
   y: number;
@@ -262,6 +270,8 @@ function upgradePrice(key: UpgradeKey): number {
 }
 
 function buyUpgrade(key: UpgradeKey): void {
+  if (!currentPlayer()) return;
+
   const item = upgradeInfo.find(u => u.key === key)!;
   const price = upgradePrice(key);
 
@@ -415,6 +425,8 @@ window.addEventListener("blur", () => {
 // TOUCH CONTROLS
 
 canvas.addEventListener("pointerdown", event => {
+  if (!currentPlayer()) return;
+
   if (gameScreen === "playing") {
     const pause = pauseButtonBounds();
 
@@ -483,6 +495,8 @@ canvas.addEventListener("pointercancel", releasePointer);
 // START GAME
 
 function startGame(mode: GameMode): void {
+  if (!currentPlayer()) return;
+
   gameMode = mode;
   gameScreen = "playing";
 
@@ -608,6 +622,7 @@ function spawnZombie(): void {
 // GAMEPLAY UPDATE
 
 function update(dt: number): void {
+  if (!currentPlayer()) return;
   if (gameScreen !== "playing") return;
 
   // SURVIVAL WAVE BREAK
@@ -1119,8 +1134,7 @@ function drawJoystick(): void {
     home.x,
     home.y,
     JOYSTICK_RADIUS,
-    0,
-    Math.PI * 2
+    0, Math.PI * 2
   );
   ctx.fill();
   ctx.stroke();
@@ -1132,8 +1146,7 @@ function drawJoystick(): void {
     home.x + joystick.dx * JOYSTICK_RADIUS,
     home.y + joystick.dy * JOYSTICK_RADIUS,
     22,
-    0,
-    Math.PI * 2
+    0, Math.PI * 2
   );
   ctx.fill();
 }
@@ -1254,24 +1267,49 @@ function drawMenu(): void {
     }
   );
 
+  // ACCOUNT INFORMATION
+
+  const profile = currentPlayer();
+
+  if (profile) {
+    drawText(
+      `Signed in: ${profile.username}`,
+      width / 2,
+      height - 155,
+      13,
+      "#e8c66d",
+      "center"
+    );
+
+    if (profile.is_admin) {
+      drawText(
+        "ADMINISTRATOR",
+        width / 2,
+        height - 135,
+        12,
+        "#8ee29a",
+        "center"
+      );
+    }
+
+    addButton(
+      "LOG OUT",
+      height - 115,
+      () => {
+        void signOutPlayer().catch(showError);
+      }
+    );
+  }
+
   // DEVELOPER STAMP
 
-  const stampY = height - 72;
+  const stampY = height - 52;
 
   drawText(
-    "DEVELOPED BY:",
+    "DEVELOPED BY: APEX LABS",
     width / 2,
     stampY,
-    11,
-    "#a7aa9c",
-    "center"
-  );
-
-  drawText(
-    "APEX LABS",
-    width / 2,
-    stampY + 20,
-    17,
+    12,
     "#e8c66d",
     "center"
   );
@@ -1279,8 +1317,8 @@ function drawMenu(): void {
   drawText(
     "DEVELOPERD3",
     width / 2,
-    stampY + 38,
-    12,
+    stampY + 18,
+    11,
     "#e8c66d",
     "center"
   );
@@ -1580,8 +1618,7 @@ function drawGame(): void {
       bullet.x,
       bullet.y,
       4,
-      0,
-      Math.PI * 2
+      0, Math.PI * 2
     );
     ctx.fill();
   }
@@ -1784,3 +1821,18 @@ function frame(time: number): void {
 }
 
 requestAnimationFrame(frame);
+
+// SUPABASE AUTHENTICATION INTEGRATION
+
+onProfileChange(profile => {
+  if (!profile) {
+    gameScreen = "menu";
+    resetJoystick();
+    keys.clear();
+    zombies.length = 0;
+    bullets.length = 0;
+    runCoins = 0;
+  }
+});
+
+void initializeAuth().catch(showError);
