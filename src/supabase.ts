@@ -1,19 +1,10 @@
+
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL =
-  "https://utdpogwhemhpurnadmsx.supabase.co/rest/v1/";
-
-const SUPABASE_PUBLISHABLE_KEY =
-  “sb_publishable_vGjODZp5gTglY6a8-aaseg_fSNuGtRy";
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_PUBLISHABLE_KEY,
-  {
-    auth: {
-      autoRefreshToken: true,
-      persistSession: true,
-      detectSessionInUrl: false
-    }
-  }
+  supabaseUrl,
+  supabaseAnonKey
 );
