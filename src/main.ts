@@ -1,4 +1,3 @@
-
 type Zombie = {
   x: number;
   y: number;
@@ -7,6 +6,7 @@ type Zombie = {
   speed: number;
   radius: number;
   kind: number;
+  phase: number;
 };
 
 type Bullet = {
@@ -35,6 +35,8 @@ type SaveData = {
 type GameScreen =
   | "menu"
   | "playing"
+  | "paused"
+  | "confirmExit"
   | "shop"
   | "complete"
   | "gameover";
@@ -46,7 +48,6 @@ type GameButton = {
   y: number;
   w: number;
   h: number;
-  label: string;
   action: () => void;
 };
 
@@ -87,56 +88,45 @@ function loadSave(): SaveData {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return defaults;
 
-    const saved = JSON.parse(raw);
+    const data = JSON.parse(raw);
 
-    const validNumber = (
-      value: unknown,
-      fallback: number
-    ): number => {
-      if (
-        typeof value === "number" &&
-        Number.isFinite(value) &&
-        value >= 0
-      ) {
-        return Math.floor(value);
-      }
-      return fallback;
-    };
+    const number = (v: unknown, fallback: number) =>
+      typeof v === "number" &&
+      Number.isFinite(v) &&
+      v >= 0
+        ? Math.floor(v)
+        : fallback;
 
     const upgrades = { ...defaults.upgrades };
 
     for (const item of upgradeInfo) {
       upgrades[item.key] = Math.min(
         item.max,
-        validNumber(saved.upgrades?.[item.key], 0)
+        number(data.upgrades?.[item.key], 0)
       );
     }
 
     return {
-      coins: validNumber(saved.coins, 0),
+      coins: number(data.coins, 0),
       campaignLevel: Math.max(
         1,
-        validNumber(saved.campaignLevel, 1)
+        number(data.campaignLevel, 1)
       ),
-      bestEndless: validNumber(saved.bestEndless, 0),
+      bestEndless: number(data.bestEndless, 0),
       upgrades
     };
-  } catch (error) {
-    console.warn("Save load failed:", error);
+  } catch {
     return defaults;
   }
 }
 
-let save: SaveData = loadSave();
+let save = loadSave();
 
 function persist(): void {
   try {
-    localStorage.setItem(
-      SAVE_KEY,
-      JSON.stringify(save)
-    );
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch (error) {
-    console.warn("Save failed:", error);
+    console.warn("Unable to save", error);
   }
 }
 
@@ -151,58 +141,48 @@ if (!context) {
 
 const ctx: CanvasRenderingContext2D = context;
 
-document.documentElement.style.margin = "0";
-document.documentElement.style.overflow = "hidden";
-document.body.style.margin = "0";
-document.body.style.overflow = "hidden";
-document.body.style.background = "#101510";
+document.documentElement.style.cssText =
+  "margin:0;overflow:hidden";
+
+document.body.style.cssText =
+  "margin:0;overflow:hidden;background:#101510";
 
 canvas.id = "apex-game-canvas";
-canvas.style.position = "fixed";
-canvas.style.inset = "0";
-canvas.style.display = "block";
-canvas.style.width = "100vw";
-canvas.style.height = "100dvh";
-canvas.style.touchAction = "none";
-canvas.style.zIndex = "10";
+
+canvas.style.cssText =
+  "position:fixed;inset:0;width:100vw;" +
+  "height:100dvh;display:block;" +
+  "touch-action:none;z-index:10";
 
 document.body.appendChild(canvas);
 
-// LOADING SCREEN FIX
+// REMOVE OLD LOADING ELEMENTS
 
-function removeLoadingScreen(): void {
-  const selectors = [
-    "#loading",
-    "#loader",
-    "#loading-screen",
-    ".loading",
-    ".loading-screen",
-    ".loader"
-  ];
-
-  for (const selector of selectors) {
-    document.querySelectorAll(selector).forEach(element => {
-      if (element !== canvas) {
-        element.remove();
-      }
-    });
-  }
-
-  // Remove text-only loading elements left by index.html.
-  document.querySelectorAll(
-    "body > div, body > p, body > h1, body > h2"
-  ).forEach(element => {
-    if (
-      element !== canvas &&
-      element.textContent?.trim() ===
-        "Loading APEX Zombie Survival..."
-    ) {
-      element.remove();
-    }
+for (const selector of [
+  "#loading",
+  "#loader",
+  "#loading-screen",
+  ".loading",
+  ".loading-screen",
+  ".loader"
+]) {
+  document.querySelectorAll(selector).forEach(el => {
+    el.remove();
   });
 }
 
-removeLoadingScreen();
+document.querySelectorAll(
+  "body > div,body > p,body > h1,body > h2"
+).forEach(el => {
+  if (
+    el.textContent?.trim() ===
+    "Loading APEX Zombie Survival..."
+  ) {
+    el.remove();
+  }
+});
+
+// GAME VARIABLES
 
 let width = 0;
 let height = 0;
@@ -222,6 +202,7 @@ const bullets: Bullet[] = [];
 
 let gameScreen: GameScreen = "menu";
 let gameMode: GameMode = "campaign";
+
 let shopReturn: "menu" | "complete" = "menu";
 
 let kills = 0;
@@ -231,12 +212,16 @@ let targetKills = 15;
 let difficulty = 1;
 let elapsed = 0;
 let noDamage = true;
+
 let spawnTimer = 0;
 let shootTimer = 0;
 let invulnerable = 0;
 let lastTime = 0;
 let lastMilestone = 0;
 let levelReward = 0;
+
+let waveBreak = 0;
+let waveTime = 0;
 
 let buttons: GameButton[] = [];
 
@@ -251,30 +236,25 @@ const joystick = {
 
 const JOYSTICK_RADIUS = 48;
 
-// CHARACTER UPGRADES
+// UPGRADE ATTRIBUTES
 
-function maxHealth(): number {
-  return 100 + save.upgrades.health * 20;
-}
+const maxHealth = () =>
+  100 + save.upgrades.health * 20;
 
-function movementSpeed(): number {
-  return 190 * (1 + save.upgrades.stamina * 0.1);
-}
+const movementSpeed = () =>
+  190 * (1 + save.upgrades.stamina * 0.1);
 
-function bulletDamage(): number {
-  return 1 + save.upgrades.damage;
-}
+const bulletDamage = () =>
+  1 + save.upgrades.damage;
 
-function fireDelay(): number {
-  return Math.max(
+const fireDelay = () =>
+  Math.max(
     0.1,
     0.35 * Math.pow(0.9, save.upgrades.fireRate)
   );
-}
 
 function upgradePrice(key: UpgradeKey): number {
-  const item = upgradeInfo.find(u => u.key === key);
-  if (!item) return Infinity;
+  const item = upgradeInfo.find(u => u.key === key)!;
 
   return Math.floor(
     item.price * Math.pow(1.5, save.upgrades[key])
@@ -282,9 +262,7 @@ function upgradePrice(key: UpgradeKey): number {
 }
 
 function buyUpgrade(key: UpgradeKey): void {
-  const item = upgradeInfo.find(u => u.key === key);
-  if (!item) return;
-
+  const item = upgradeInfo.find(u => u.key === key)!;
   const price = upgradePrice(key);
 
   if (save.upgrades[key] >= item.max) return;
@@ -295,7 +273,7 @@ function buyUpgrade(key: UpgradeKey): void {
   persist();
 }
 
-// SCREEN SIZE
+// SCREEN RESIZING
 
 function resize(): void {
   const oldWidth = width;
@@ -319,17 +297,20 @@ function resize(): void {
     player.y = height / 2;
     initialized = true;
   } else {
-    player.x += (width - oldWidth) / 2;
-    player.y += (height - oldHeight) / 2;
-
     player.x = Math.max(
-      player.radius,
-      Math.min(width - player.radius, player.x)
+      15,
+      Math.min(
+        width - 15,
+        player.x + (width - oldWidth) / 2
+      )
     );
 
     player.y = Math.max(
-      player.radius,
-      Math.min(height - player.radius, player.y)
+      15,
+      Math.min(
+        height - 15,
+        player.y + (height - oldHeight) / 2
+      )
     );
   }
 }
@@ -337,14 +318,12 @@ function resize(): void {
 window.addEventListener("resize", resize);
 resize();
 
-// MOBILE JOYSTICK
+// JOYSTICK
 
-function joystickHome() {
-  return {
-    x: 83,
-    y: height - 100
-  };
-}
+const joystickHome = () => ({
+  x: Math.min(83, width * 0.23),
+  y: height - 100
+});
 
 function resetJoystick(): void {
   joystick.active = false;
@@ -365,17 +344,59 @@ function updateJoystick(x: number, y: number): void {
     JOYSTICK_RADIUS / Math.max(1, distance)
   );
 
-  joystick.dx = dx * factor / JOYSTICK_RADIUS;
-  joystick.dy = dy * factor / JOYSTICK_RADIUS;
+  joystick.dx =
+    distance < 8
+      ? 0
+      : dx * factor / JOYSTICK_RADIUS;
 
-  if (distance < 8) {
-    joystick.dx = 0;
-    joystick.dy = 0;
-  }
+  joystick.dy =
+    distance < 8
+      ? 0
+      : dy * factor / JOYSTICK_RADIUS;
+}
+
+// PAUSE SYSTEM
+
+function pauseGame(): void {
+  gameScreen = "paused";
+  resetJoystick();
+}
+
+function resumeGame(): void {
+  gameScreen = "playing";
+  lastTime = 0;
+}
+
+function abandonRun(): void {
+  runCoins = 0;
+  zombies.length = 0;
+  bullets.length = 0;
+  waveBreak = 0;
+
+  resetJoystick();
+  gameScreen = "menu";
+}
+
+function pauseButtonBounds() {
+  return {
+    x: width - 62,
+    y: 15,
+    w: 48,
+    h: 42
+  };
 }
 
 window.addEventListener("keydown", event => {
-  keys.add(event.key.toLowerCase());
+  const key = event.key.toLowerCase();
+  keys.add(key);
+
+  if (key === "escape" || key === "p") {
+    if (gameScreen === "playing") {
+      pauseGame();
+    } else if (gameScreen === "paused") {
+      resumeGame();
+    }
+  }
 });
 
 window.addEventListener("keyup", event => {
@@ -385,36 +406,57 @@ window.addEventListener("keyup", event => {
 window.addEventListener("blur", () => {
   keys.clear();
   resetJoystick();
+
+  if (gameScreen === "playing") {
+    pauseGame();
+  }
 });
 
+// TOUCH CONTROLS
+
 canvas.addEventListener("pointerdown", event => {
-  if (gameScreen !== "playing") {
-    const clickedButton = [...buttons]
-      .reverse()
-      .find(button =>
-        event.clientX >= button.x &&
-        event.clientX <= button.x + button.w &&
-        event.clientY >= button.y &&
-        event.clientY <= button.y + button.h
+  if (gameScreen === "playing") {
+    const pause = pauseButtonBounds();
+
+    if (
+      event.clientX >= pause.x &&
+      event.clientX <= pause.x + pause.w &&
+      event.clientY >= pause.y &&
+      event.clientY <= pause.y + pause.h
+    ) {
+      pauseGame();
+      return;
+    }
+
+    if (
+      event.clientX < width * 0.55 &&
+      !joystick.active &&
+      waveBreak <= 0
+    ) {
+      joystick.active = true;
+      joystick.pointerId = event.pointerId;
+
+      updateJoystick(
+        event.clientX,
+        event.clientY
       );
 
-    if (clickedButton) {
-      clickedButton.action();
+      canvas.setPointerCapture(event.pointerId);
     }
 
     return;
   }
 
-  if (
-    event.clientX < width * 0.55 &&
-    !joystick.active
-  ) {
-    joystick.active = true;
-    joystick.pointerId = event.pointerId;
+  const button = [...buttons]
+    .reverse()
+    .find(b =>
+      event.clientX >= b.x &&
+      event.clientX <= b.x + b.w &&
+      event.clientY >= b.y &&
+      event.clientY <= b.y + b.h
+    );
 
-    updateJoystick(event.clientX, event.clientY);
-    canvas.setPointerCapture(event.pointerId);
-  }
+  button?.action();
 });
 
 canvas.addEventListener("pointermove", event => {
@@ -422,7 +464,10 @@ canvas.addEventListener("pointermove", event => {
     joystick.active &&
     joystick.pointerId === event.pointerId
   ) {
-    updateJoystick(event.clientX, event.clientY);
+    updateJoystick(
+      event.clientX,
+      event.clientY
+    );
   }
 });
 
@@ -435,10 +480,10 @@ function releasePointer(event: PointerEvent): void {
 canvas.addEventListener("pointerup", releasePointer);
 canvas.addEventListener("pointercancel", releasePointer);
 
-// GAME MODES
+// START GAME
 
-function startGame(selectedMode: GameMode): void {
-  gameMode = selectedMode;
+function startGame(mode: GameMode): void {
+  gameMode = mode;
   gameScreen = "playing";
 
   player.x = width / 2;
@@ -454,6 +499,9 @@ function startGame(selectedMode: GameMode): void {
   runCoins = 0;
   waveKills = 0;
   elapsed = 0;
+  waveTime = 0;
+  waveBreak = 0;
+
   spawnTimer = 0;
   shootTimer = 0;
   invulnerable = 0;
@@ -461,7 +509,7 @@ function startGame(selectedMode: GameMode): void {
   noDamage = true;
 
   difficulty =
-    selectedMode === "campaign"
+    mode === "campaign"
       ? save.campaignLevel
       : 1;
 
@@ -470,9 +518,14 @@ function startGame(selectedMode: GameMode): void {
   resetJoystick();
 }
 
+// COIN BANKING
+
 function awardCoins(amount: number): void {
-  save.coins += amount;
   runCoins += amount;
+}
+
+function bankRunCoins(): void {
+  save.coins += runCoins;
   persist();
 }
 
@@ -482,7 +535,9 @@ function finishCampaign(): void {
     : 0;
 
   levelReward = difficulty * 25 + bonus;
+
   awardCoins(levelReward);
+  bankRunCoins();
 
   save.campaignLevel++;
   persist();
@@ -492,19 +547,22 @@ function finishCampaign(): void {
 }
 
 function endGame(): void {
-  gameScreen = "gameover";
-  resetJoystick();
+  bankRunCoins();
 
   if (
     gameMode === "endless" &&
     kills > save.bestEndless
   ) {
     save.bestEndless = kills;
-    persist();
   }
+
+  persist();
+
+  gameScreen = "gameover";
+  resetJoystick();
 }
 
-// ZOMBIE SPAWNING
+// SPAWN ZOMBIES
 
 function spawnZombie(): void {
   const side = Math.floor(Math.random() * 4);
@@ -542,19 +600,48 @@ function spawnZombie(): void {
     maxHp: hp,
     speed: 45 + difficulty * 5 - kind * 8,
     radius: kind ? 17 : 13,
-    kind
+    kind,
+    phase: Math.random() * Math.PI * 2
   });
 }
 
-// GAME UPDATE
+// GAMEPLAY UPDATE
 
 function update(dt: number): void {
   if (gameScreen !== "playing") return;
 
+  // SURVIVAL WAVE BREAK
+
+  if (waveBreak > 0) {
+    waveBreak = Math.max(0, waveBreak - dt);
+
+    if (waveBreak === 0) {
+      difficulty++;
+      waveTime = 0;
+      spawnTimer = 0;
+    }
+
+    return;
+  }
+
   elapsed += dt;
 
   if (gameMode === "endless") {
-    difficulty = 1 + Math.floor(elapsed / 35);
+    waveTime += dt;
+
+    if (waveTime >= 35) {
+      waveTime = 0;
+
+      if (difficulty >= 10) {
+        waveBreak = 3;
+        zombies.length = 0;
+        bullets.length = 0;
+        resetJoystick();
+        return;
+      }
+
+      difficulty++;
+    }
 
     const milestone = Math.floor(elapsed / 30);
 
@@ -563,6 +650,8 @@ function update(dt: number): void {
       awardCoins(20 + milestone * 10);
     }
   }
+
+  // PLAYER MOVEMENT
 
   let dx = 0;
   let dy = 0;
@@ -583,10 +672,16 @@ function update(dt: number): void {
     const strength = Math.min(1, length);
 
     player.x +=
-      dx / length * movementSpeed() * strength * dt;
+      dx / length *
+      movementSpeed() *
+      strength *
+      dt;
 
     player.y +=
-      dy / length * movementSpeed() * strength * dt;
+      dy / length *
+      movementSpeed() *
+      strength *
+      dt;
   }
 
   player.x = Math.max(
@@ -599,6 +694,8 @@ function update(dt: number): void {
     Math.min(height - player.radius, player.y)
   );
 
+  // ZOMBIE SPAWNING
+
   spawnTimer -= dt;
 
   if (spawnTimer <= 0) {
@@ -609,6 +706,8 @@ function update(dt: number): void {
       1.5 - difficulty * 0.075
     );
   }
+
+  // AUTO SHOOTING
 
   shootTimer -= dt;
 
@@ -654,8 +753,12 @@ function update(dt: number): void {
 
   invulnerable = Math.max(0, invulnerable - dt);
 
+  // ZOMBIE MOVEMENT AND DAMAGE
+
   for (const zombie of zombies) {
     if (zombie.hp <= 0) continue;
+
+    zombie.phase += dt * 8;
 
     const angle = Math.atan2(
       player.y - zombie.y,
@@ -668,13 +771,13 @@ function update(dt: number): void {
     zombie.y +=
       Math.sin(angle) * zombie.speed * dt;
 
-    const distanceToPlayer = Math.hypot(
+    const distance = Math.hypot(
       zombie.x - player.x,
       zombie.y - player.y
     );
 
     if (
-      distanceToPlayer <
+      distance <
         zombie.radius + player.radius &&
       invulnerable <= 0
     ) {
@@ -698,6 +801,8 @@ function update(dt: number): void {
     }
   }
 
+  // BULLET COLLISIONS
+
   for (const bullet of bullets) {
     bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
@@ -720,7 +825,10 @@ function update(dt: number): void {
         if (zombie.hp <= 0) {
           kills++;
           waveKills++;
-          awardCoins(zombie.kind ? 10 : 5);
+
+          awardCoins(
+            zombie.kind ? 10 : 5
+          );
         }
 
         break;
@@ -747,6 +855,8 @@ function update(dt: number): void {
       bullets.splice(i, 1);
     }
   }
+
+  // CAMPAIGN LEVEL COMPLETION
 
   if (
     gameMode === "campaign" &&
@@ -792,10 +902,25 @@ function drawBackground(): void {
     ctx.lineTo(width, y);
     ctx.stroke();
   }
+
+  // GROUND DETAILS
+
+  ctx.fillStyle = "#26392b";
+
+  for (let x = 25; x < width; x += 95) {
+    for (let y = 35; y < height; y += 110) {
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 }
+
+// IMPROVED PLAYER GRAPHICS
 
 function drawPlayer(): void {
   ctx.save();
+
   ctx.translate(player.x, player.y);
   ctx.rotate(player.angle);
 
@@ -806,36 +931,77 @@ function drawPlayer(): void {
     ctx.globalAlpha = 0.55;
   }
 
-  ctx.fillStyle = "#0a110c";
+  // SHADOW
+
+  ctx.fillStyle = "#090d0a";
   ctx.beginPath();
   ctx.ellipse(
-    2, 5, 18, 14,
+    2, 5, 21, 17,
     0, 0, Math.PI * 2
   );
   ctx.fill();
 
-  ctx.fillStyle = "#b89248";
-  ctx.fillRect(-12, -10, 24, 20);
+  // BOOTS
 
-  ctx.fillStyle = "#e2c17b";
+  ctx.fillStyle = "#242a24";
+  ctx.fillRect(-14, -13, 10, 8);
+  ctx.fillRect(-14, 5, 10, 8);
+
+  // UNIFORM
+
+  ctx.fillStyle = "#465842";
+  ctx.fillRect(-12, -12, 25, 24);
+
+  // BODY ARMOR
+
+  ctx.fillStyle = "#8d7949";
+  ctx.fillRect(-7, -10, 17, 20);
+
+  // ARMOR STRAPS
+
+  ctx.fillStyle = "#2b3228";
+  ctx.fillRect(-5, -10, 4, 20);
+  ctx.fillRect(6, -10, 4, 20);
+
+  // HEAD
+
+  ctx.fillStyle = "#cba77a";
   ctx.beginPath();
-  ctx.arc(2, 0, 9, 0, Math.PI * 2);
+  ctx.arc(3, 0, 9, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#4b5b45";
-  ctx.fillRect(8, -6, 15, 12);
+  // HELMET
 
-  ctx.fillStyle = "#222a2c";
-  ctx.fillRect(15, -4, 20, 8);
+  ctx.fillStyle = "#53624a";
+  ctx.beginPath();
+  ctx.arc(1, 0, 9, Math.PI * 0.55, Math.PI * 1.45);
+  ctx.fill();
 
-  ctx.fillStyle = "#a9b2ae";
-  ctx.fillRect(30, -2, 7, 4);
+  // ARMS
+
+  ctx.fillStyle = "#ad8b67";
+  ctx.fillRect(8, -11, 12, 6);
+  ctx.fillRect(8, 5, 12, 6);
+
+  // WEAPON
+
+  ctx.fillStyle = "#22282a";
+  ctx.fillRect(15, -5, 22, 10);
+
+  ctx.fillStyle = "#69706d";
+  ctx.fillRect(32, -2, 10, 4);
+
+  ctx.fillStyle = "#111617";
+  ctx.fillRect(21, -7, 7, 3);
 
   ctx.restore();
 }
 
+// IMPROVED ZOMBIE GRAPHICS
+
 function drawZombie(zombie: Zombie): void {
   ctx.save();
+
   ctx.translate(zombie.x, zombie.y);
 
   const angle = Math.atan2(
@@ -845,36 +1011,76 @@ function drawZombie(zombie: Zombie): void {
 
   ctx.rotate(angle);
 
+  const wobble = Math.sin(zombie.phase) * 2;
+
+  // SHADOW
+
   ctx.fillStyle = "#0a100d";
   ctx.beginPath();
   ctx.ellipse(
-    2, 4,
-    zombie.radius + 3,
-    zombie.radius,
+    2, 5,
+    zombie.radius + 4,
+    zombie.radius + 2,
     0, 0, Math.PI * 2
   );
   ctx.fill();
 
+  // TORN CLOTHING
+
   ctx.fillStyle = zombie.kind
-    ? "#526d49"
-    : "#69966a";
+    ? "#4d5540"
+    : "#515c4b";
+
+  ctx.fillRect(
+    -zombie.radius + 2,
+    -zombie.radius + 3,
+    zombie.radius * 2 - 4,
+    zombie.radius * 2 - 6
+  );
+
+  // ARMS
+
+  ctx.fillStyle = zombie.kind
+    ? "#75845b"
+    : "#82a477";
+
+  ctx.fillRect(7, -13 + wobble, 13, 6);
+  ctx.fillRect(7, 7 - wobble, 13, 6);
+
+  // HEAD
+
+  ctx.fillStyle = zombie.kind
+    ? "#60774f"
+    : "#83a778";
 
   ctx.beginPath();
   ctx.arc(
     0, 0,
-    zombie.radius,
+    zombie.radius - 3,
     0, Math.PI * 2
   );
   ctx.fill();
 
-  ctx.fillStyle = "#c3e3aa";
+  // DECAY MARKS
+
+  ctx.fillStyle = "#435943";
+  ctx.fillRect(-6, -5, 5, 4);
+  ctx.fillRect(-3, 6, 6, 3);
+
+  // EYES
+
+  ctx.fillStyle = "#e6dfaa";
   ctx.fillRect(3, -6, 4, 3);
   ctx.fillRect(3, 3, 4, 3);
 
-  ctx.fillStyle = "#2b372b";
-  ctx.fillRect(7, -2, 4, 4);
+  // MOUTH
+
+  ctx.fillStyle = "#382e2a";
+  ctx.fillRect(8, -2, 4, 4);
 
   ctx.restore();
+
+  // HEALTH BAR
 
   if (zombie.maxHp > 1) {
     const barWidth = zombie.radius * 2 + 6;
@@ -899,6 +1105,8 @@ function drawZombie(zombie: Zombie): void {
   }
 }
 
+// JOYSTICK GRAPHICS
+
 function drawJoystick(): void {
   const home = joystickHome();
 
@@ -918,6 +1126,7 @@ function drawJoystick(): void {
   ctx.stroke();
 
   ctx.fillStyle = "rgba(225,194,110,0.8)";
+
   ctx.beginPath();
   ctx.arc(
     home.x + joystick.dx * JOYSTICK_RADIUS,
@@ -929,7 +1138,7 @@ function drawJoystick(): void {
   ctx.fill();
 }
 
-// MENU BUTTONS
+// BUTTONS
 
 function addButton(
   label: string,
@@ -941,11 +1150,19 @@ function addButton(
   const x = (width - buttonWidth) / 2;
 
   ctx.fillStyle = "#a78439";
-  ctx.fillRect(x, y, buttonWidth, buttonHeight);
+  ctx.fillRect(
+    x, y,
+    buttonWidth,
+    buttonHeight
+  );
 
   ctx.strokeStyle = "#e7c76c";
   ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, buttonWidth, buttonHeight);
+  ctx.strokeRect(
+    x, y,
+    buttonWidth,
+    buttonHeight
+  );
 
   drawText(
     label,
@@ -961,13 +1178,12 @@ function addButton(
     y,
     w: buttonWidth,
     h: buttonHeight,
-    label,
     action
   });
 }
 
 function drawPanel(title: string): void {
-  ctx.fillStyle = "rgba(5,12,8,0.94)";
+  ctx.fillStyle = "rgba(5,12,8,0.96)";
   ctx.fillRect(0, 0, width, height);
 
   drawText(
@@ -1037,6 +1253,37 @@ function drawMenu(): void {
       gameScreen = "shop";
     }
   );
+
+  // DEVELOPER STAMP
+
+  const stampY = height - 72;
+
+  drawText(
+    "DEVELOPED BY:",
+    width / 2,
+    stampY,
+    11,
+    "#a7aa9c",
+    "center"
+  );
+
+  drawText(
+    "APEX LABS",
+    width / 2,
+    stampY + 20,
+    17,
+    "#e8c66d",
+    "center"
+  );
+
+  drawText(
+    "DEVELOPERD3",
+    width / 2,
+    stampY + 38,
+    12,
+    "#e8c66d",
+    "center"
+  );
 }
 
 // UPGRADE SHOP
@@ -1085,7 +1332,7 @@ function drawShop(): void {
   );
 }
 
-// CAMPAIGN COMPLETE
+// CAMPAIGN COMPLETION SCREEN
 
 function drawComplete(): void {
   drawPanel("LEVEL COMPLETED!");
@@ -1154,7 +1401,7 @@ function drawComplete(): void {
   );
 }
 
-// GAME OVER
+// GAME OVER SCREEN
 
 function drawGameOver(): void {
   drawPanel("GAME OVER");
@@ -1216,6 +1463,106 @@ function drawGameOver(): void {
   );
 }
 
+// PAUSE MENU
+
+function drawPaused(): void {
+  drawGame();
+
+  ctx.fillStyle = "rgba(0,0,0,0.84)";
+  ctx.fillRect(0, 0, width, height);
+
+  drawText(
+    "GAME PAUSED",
+    width / 2,
+    height / 2 - 115,
+    26,
+    "#e8c66d",
+    "center"
+  );
+
+  drawText(
+    `Pending Coins: ${runCoins}`,
+    width / 2,
+    height / 2 - 75,
+    15,
+    "#ffffff",
+    "center"
+  );
+
+  addButton(
+    "RESUME GAME",
+    height / 2 - 35,
+    resumeGame
+  );
+
+  addButton(
+    "EXIT TO MAIN MENU",
+    height / 2 + 30,
+    () => {
+      gameScreen = "confirmExit";
+    }
+  );
+}
+
+// EXIT CONFIRMATION
+
+function drawConfirmExit(): void {
+  drawGame();
+
+  ctx.fillStyle = "rgba(0,0,0,0.92)";
+  ctx.fillRect(0, 0, width, height);
+
+  drawText(
+    "LEAVE CURRENT GAME?",
+    width / 2,
+    height / 2 - 125,
+    21,
+    "#ff8d7c",
+    "center"
+  );
+
+  drawText(
+    "Current run progress and coins",
+    width / 2,
+    height / 2 - 85,
+    14,
+    "#ffffff",
+    "center"
+  );
+
+  drawText(
+    "will NOT be saved.",
+    width / 2,
+    height / 2 - 63,
+    14,
+    "#ffffff",
+    "center"
+  );
+
+  drawText(
+    `You will lose ${runCoins} pending coins.`,
+    width / 2,
+    height / 2 - 28,
+    14,
+    "#e8c66d",
+    "center"
+  );
+
+  addButton(
+    "CANCEL",
+    height / 2 + 5,
+    () => {
+      gameScreen = "paused";
+    }
+  );
+
+  addButton(
+    "EXIT GAME",
+    height / 2 + 70,
+    abandonRun
+  );
+}
+
 // GAMEPLAY DISPLAY
 
 function drawGame(): void {
@@ -1240,6 +1587,8 @@ function drawGame(): void {
   }
 
   drawPlayer();
+
+  // HUD
 
   ctx.fillStyle = "rgba(8,14,10,0.84)";
   ctx.fillRect(0, 0, width, 115);
@@ -1277,10 +1626,10 @@ function drawGame(): void {
   );
 
   drawText(
-    `Coins ${save.coins} | Kills ${kills}`,
+    `Coins ${save.coins} (+${runCoins}) | Kills ${kills}`,
     15,
     90,
-    14
+    13
   );
 
   if (gameMode === "campaign") {
@@ -1301,8 +1650,56 @@ function drawGame(): void {
     );
   }
 
+  // PAUSE BUTTON
+
+  const pause = pauseButtonBounds();
+
+  ctx.fillStyle = "#a78439";
+  ctx.fillRect(
+    pause.x,
+    pause.y,
+    pause.w,
+    pause.h
+  );
+
+  ctx.fillStyle = "#101510";
+  ctx.fillRect(pause.x + 14, pause.y + 11, 6, 20);
+  ctx.fillRect(pause.x + 28, pause.y + 11, 6, 20);
+
   drawJoystick();
+
+  // SURVIVAL BREAK COUNTDOWN
+
+  if (waveBreak > 0) {
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(
+      0,
+      height / 2 - 85,
+      width,
+      170
+    );
+
+    drawText(
+      "WAVE BREAK",
+      width / 2,
+      height / 2 - 25,
+      24,
+      "#e8c66d",
+      "center"
+    );
+
+    drawText(
+      String(Math.ceil(waveBreak)),
+      width / 2,
+      height / 2 + 35,
+      44,
+      "#ffffff",
+      "center"
+    );
+  }
 }
+
+// SCREEN RENDERING
 
 function draw(): void {
   buttons = [];
@@ -1310,6 +1707,14 @@ function draw(): void {
   switch (gameScreen) {
     case "playing":
       drawGame();
+      break;
+
+    case "paused":
+      drawPaused();
+      break;
+
+    case "confirmExit":
+      drawConfirmExit();
       break;
 
     case "menu":
@@ -1333,7 +1738,10 @@ function draw(): void {
 // ERROR HANDLING
 
 function showError(error: unknown): void {
-  console.error("APEX Zombie Survival error:", error);
+  console.error(
+    "APEX Zombie Survival error:",
+    error
+  );
 
   const message = document.createElement("pre");
 
