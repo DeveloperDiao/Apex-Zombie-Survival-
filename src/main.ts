@@ -9,12 +9,6 @@ import {
 
 import { supabase } from "./supabase";
 
-// ==========================================
-// APEX ZOMBIE SURVIVAL
-// ==========================================
-
-// GAME ENTITY TYPES
-
 type Zombie = {
   x: number;
   y: number;
@@ -61,14 +55,6 @@ type GameScreen =
 
 type GameMode = "campaign" | "endless";
 
-type GameButton = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  action: () => void;
-};
-
 type AdminSection =
   | "home"
   | "players"
@@ -77,28 +63,24 @@ type AdminSection =
   | "accounts"
   | "history";
 
-// ==========================================
-// SUPABASE PLAYER ACCOUNT TYPES
-// ==========================================
+type GameButton = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  action: () => void;
+};
 
 type AdminPlayer = {
   id: string;
   username: string;
   coins: number;
+  campaign_level: number;
+  best_endless: number;
   is_admin: boolean;
   is_disabled: boolean;
-  campaign_level?: number | null;
+  created_at: string;
 };
-
-type AdminPlayersResponse = {
-  players?: AdminPlayer[];
-  error?: string;
-  message?: string;
-};
-
-// ==========================================
-// EXISTING SAVE KEYS - DO NOT CHANGE
-// ==========================================
 
 const SAVE_KEY = "apex-zombie-survival-v2";
 
@@ -110,10 +92,6 @@ const LEGACY_BACKUP_KEY =
 
 const LEGACY_OWNER_KEY =
   "apex-zombie-survival-v2-owner";
-
-// ==========================================
-// UPGRADE CONFIGURATION
-// ==========================================
 
 const upgradeInfo: {
   key: UpgradeKey;
@@ -153,10 +131,6 @@ const upgradeInfo: {
   }
 ];
 
-// ==========================================
-// DEFAULT PLAYER SAVE
-// ==========================================
-
 function defaultSave(): SaveData {
   return {
     coins: 0,
@@ -172,10 +146,6 @@ function defaultSave(): SaveData {
   };
 }
 
-// ==========================================
-// VALIDATE STORED SAVE DATA
-// ==========================================
-
 function parseSave(raw: string | null): SaveData {
   const defaults = defaultSave();
 
@@ -186,15 +156,11 @@ function parseSave(raw: string | null): SaveData {
   try {
     const data: unknown = JSON.parse(raw);
 
-    if (
-      !data ||
-      typeof data !== "object"
-    ) {
+    if (!data || typeof data !== "object") {
       return defaults;
     }
 
-    const record =
-      data as Record<string, unknown>;
+    const record = data as Record<string, unknown>;
 
     const rawUpgrades =
       record.upgrades &&
@@ -205,15 +171,12 @@ function parseSave(raw: string | null): SaveData {
     const number = (
       value: unknown,
       fallback: number
-    ): number => {
-      return (
-        typeof value === "number" &&
-        Number.isFinite(value) &&
-        value >= 0
-      )
+    ): number =>
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0
         ? Math.floor(value)
         : fallback;
-    };
 
     const upgrades = {
       ...defaults.upgrades
@@ -232,10 +195,7 @@ function parseSave(raw: string | null): SaveData {
         1,
         number(record.campaignLevel, 1)
       ),
-      bestEndless: number(
-        record.bestEndless,
-        0
-      ),
+      bestEndless: number(record.bestEndless, 0),
       upgrades
     };
   } catch {
@@ -243,17 +203,9 @@ function parseSave(raw: string | null): SaveData {
   }
 }
 
-// ==========================================
-// ACTIVE PLAYER SAVE
-// ==========================================
-
 let save = defaultSave();
 
 let activeSaveOwner: string | null = null;
-
-// ==========================================
-// ADMINISTRATOR DASHBOARD STATE
-// ==========================================
 
 let adminSection: AdminSection = "home";
 
@@ -267,13 +219,7 @@ let adminPlayersLoaded = false;
 
 let adminPlayersPage = 0;
 
-const ADMIN_PLAYERS_PER_PAGE = 5;
-
-let adminRequestVersion = 0;
-
-// ==========================================
-// ADMINISTRATOR AUTHORIZATION CHECK
-// ==========================================
+const ADMIN_PLAYERS_PER_PAGE = 4;
 
 function isAdministrator(): boolean {
   const profile = currentPlayer();
@@ -286,32 +232,12 @@ function isAdministrator(): boolean {
   );
 }
 
-// ==========================================
-// ADMIN PLAYER DATA RESET
-// ==========================================
-
-function resetAdminPlayerData(): void {
-  adminRequestVersion++;
-
-  adminPlayers = [];
-  adminPlayersLoading = false;
-  adminPlayersError = "";
-  adminPlayersLoaded = false;
-  adminPlayersPage = 0;
-}
-
-// ==========================================
-// REQUEST PLAYER ACCOUNTS
-// ==========================================
-
 async function loadAdminPlayers(): Promise<void> {
   if (!isAdministrator()) {
-    resetAdminPlayerData();
     return;
   }
 
-  const requestVersion = ++adminRequestVersion;
-  const adminId = currentPlayer()?.id;
+  const ownerId = activeSaveOwner;
 
   adminPlayersLoading = true;
   adminPlayersError = "";
@@ -327,12 +253,12 @@ async function loadAdminPlayers(): Promise<void> {
       throw sessionError;
     }
 
-    const accessToken =
+    const token =
       sessionData.session?.access_token;
 
-    if (!accessToken) {
+    if (!token) {
       throw new Error(
-        "Administrator session expired."
+        "Administrator session expired. Please log in again."
       );
     }
 
@@ -346,7 +272,7 @@ async function loadAdminPlayers(): Promise<void> {
           action: "list_players"
         },
         headers: {
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${token}`
         }
       }
     );
@@ -355,41 +281,38 @@ async function loadAdminPlayers(): Promise<void> {
       throw error;
     }
 
-    const response =
-      data as AdminPlayersResponse | null;
-
-    if (response?.error) {
-      throw new Error(response.error);
-    }
-
     if (
-      !response ||
-      !Array.isArray(response.players)
+      !data ||
+      !Array.isArray(data.players)
     ) {
       throw new Error(
-        "Unexpected player list response."
+        "Invalid player list response from Supabase."
       );
     }
 
     if (
-      requestVersion !== adminRequestVersion ||
       !isAdministrator() ||
-      currentPlayer()?.id !== adminId
+      activeSaveOwner !== ownerId
     ) {
       return;
     }
 
-    adminPlayers = response.players;
+    adminPlayers = data.players as AdminPlayer[];
+
     adminPlayersPage = 0;
     adminPlayersLoaded = true;
   } catch (error) {
     if (
-      requestVersion !== adminRequestVersion ||
       !isAdministrator() ||
-      currentPlayer()?.id !== adminId
+      activeSaveOwner !== ownerId
     ) {
       return;
     }
+
+    console.error(
+      "Unable to load administrator player list:",
+      error
+    );
 
     adminPlayersError =
       error instanceof Error
@@ -397,19 +320,15 @@ async function loadAdminPlayers(): Promise<void> {
         : "Unable to load player accounts.";
 
     adminPlayers = [];
-    adminPlayersLoaded = false;
   } finally {
     if (
-      requestVersion === adminRequestVersion
+      isAdministrator() &&
+      activeSaveOwner === ownerId
     ) {
       adminPlayersLoading = false;
     }
   }
 }
-
-// ==========================================
-// ADMIN DASHBOARD NAVIGATION
-// ==========================================
 
 function openAdminDashboard(): void {
   if (!isAdministrator()) {
@@ -417,10 +336,16 @@ function openAdminDashboard(): void {
   }
 
   resetJoystick();
-  resetAdminPlayerData();
 
   adminSection = "home";
+
   gameScreen = "admin";
+}
+
+function closeAdminDashboard(): void {
+  adminSection = "home";
+
+  gameScreen = "menu";
 }
 
 function openAdminSection(
@@ -433,28 +358,23 @@ function openAdminSection(
   adminSection = section;
 
   if (section === "players") {
+    adminPlayers = [];
+    adminPlayersPage = 0;
     void loadAdminPlayers();
   }
 }
 
-function closeAdminDashboard(): void {
-  resetAdminPlayerData();
-
-  adminSection = "home";
-  gameScreen = "menu";
+function clearAdminPlayerData(): void {
+  adminPlayers = [];
+  adminPlayersLoading = false;
+  adminPlayersError = "";
+  adminPlayersLoaded = false;
+  adminPlayersPage = 0;
 }
 
-// ==========================================
-// STOP SPYING
-// ==========================================
-
-// ==========================================
-// APEX ZOMBIE SURVIVAL
-// ==========================================
-
-// ACCOUNT-SPECIFIC STORAGE
-
-function playerSaveKey(playerId: string): string {
+function playerSaveKey(
+  playerId: string
+): string {
   return `${ACCOUNT_SAVE_PREFIX}${playerId}`;
 }
 
@@ -471,7 +391,9 @@ function activatePlayerSave(profile: {
 
   try {
     const key = playerSaveKey(profile.id);
-    const existing = localStorage.getItem(key);
+
+    const existing =
+      localStorage.getItem(key);
 
     if (existing !== null) {
       save = parseSave(existing);
@@ -479,11 +401,14 @@ function activatePlayerSave(profile: {
       return;
     }
 
-    const legacy = localStorage.getItem(SAVE_KEY);
+    const legacy =
+      localStorage.getItem(SAVE_KEY);
 
     if (
       legacy !== null &&
-      localStorage.getItem(LEGACY_BACKUP_KEY) === null
+      localStorage.getItem(
+        LEGACY_BACKUP_KEY
+      ) === null
     ) {
       localStorage.setItem(
         LEGACY_BACKUP_KEY,
@@ -492,7 +417,9 @@ function activatePlayerSave(profile: {
     }
 
     const legacyOwner =
-      localStorage.getItem(LEGACY_OWNER_KEY);
+      localStorage.getItem(
+        LEGACY_OWNER_KEY
+      );
 
     if (
       profile.is_admin &&
@@ -523,7 +450,7 @@ function activatePlayerSave(profile: {
     save = defaultSave();
 
     console.error(
-      "Unable to initialize account save",
+      "Unable to initialize account save:",
       error
     );
 
@@ -532,10 +459,6 @@ function activatePlayerSave(profile: {
     );
   }
 }
-
-// ==========================================
-// SAVE PLAYER PROGRESS
-// ==========================================
 
 function persist(): void {
   const profile = currentPlayer();
@@ -554,17 +477,15 @@ function persist(): void {
     );
   } catch (error) {
     console.warn(
-      "Unable to save player progress",
+      "Unable to save player progress:",
       error
     );
   }
 }
-
-// ==========================================
-// CANVAS SETUP
-// ==========================================
+/// STOP SNOOPING
 
 const canvas = document.createElement("canvas");
+
 const context = canvas.getContext("2d");
 
 if (!context) {
@@ -582,15 +503,10 @@ document.body.style.cssText =
 canvas.id = "apex-game-canvas";
 
 canvas.style.cssText =
-  "position:fixed;inset:0;width:100vw;" +
-  "height:100dvh;display:block;" +
-  "touch-action:none;z-index:10";
+  "position:fixed;inset:0;width:100vw;height:100dvh;" +
+  "display:block;touch-action:none;z-index:10";
 
 document.body.appendChild(canvas);
-
-// ==========================================
-// REMOVE OLD LOADING ELEMENTS
-// ==========================================
 
 for (const selector of [
   "#loading",
@@ -600,25 +516,23 @@ for (const selector of [
   ".loading-screen",
   ".loader"
 ]) {
-  document.querySelectorAll(selector).forEach(el => {
-    el.remove();
-  });
+  document
+    .querySelectorAll(selector)
+    .forEach(element => element.remove());
 }
 
-document.querySelectorAll(
-  "body > div,body > p,body > h1,body > h2"
-).forEach(el => {
-  if (
-    el.textContent?.trim() ===
-    "Loading APEX Zombie Survival..."
-  ) {
-    el.remove();
-  }
-});
-
-// ==========================================
-// GAME VARIABLES
-// ==========================================
+document
+  .querySelectorAll(
+    "body > div,body > p,body > h1,body > h2"
+  )
+  .forEach(element => {
+    if (
+      element.textContent?.trim() ===
+      "Loading APEX Zombie Survival..."
+    ) {
+      element.remove();
+    }
+  });
 
 let width = 0;
 let height = 0;
@@ -655,7 +569,6 @@ let invulnerable = 0;
 let lastTime = 0;
 let lastMilestone = 0;
 let levelReward = 0;
-
 let waveBreak = 0;
 let waveTime = 0;
 
@@ -672,10 +585,6 @@ const joystick = {
 
 const JOYSTICK_RADIUS = 48;
 
-// ==========================================
-// UPGRADE ATTRIBUTES
-// ==========================================
-
 const maxHealth = () =>
   100 + save.upgrades.health * 20;
 
@@ -688,44 +597,40 @@ const bulletDamage = () =>
 const fireDelay = () =>
   Math.max(
     0.1,
-    0.35 * Math.pow(
-      0.9,
-      save.upgrades.fireRate
-    )
+    0.35 * Math.pow(0.9, save.upgrades.fireRate)
   );
 
 function upgradePrice(key: UpgradeKey): number {
   const item = upgradeInfo.find(
-    u => u.key === key
+    upgrade => upgrade.key === key
   )!;
 
   return Math.floor(
-    item.price * Math.pow(
-      1.5,
-      save.upgrades[key]
-    )
+    item.price *
+    Math.pow(1.5, save.upgrades[key])
   );
 }
 
 function buyUpgrade(key: UpgradeKey): void {
+  const profile = currentPlayer();
+
   if (
-    !currentPlayer() ||
-    activeSaveOwner !== currentPlayer()?.id
+    !profile ||
+    activeSaveOwner !== profile.id
   ) {
     return;
   }
 
   const item = upgradeInfo.find(
-    u => u.key === key
+    upgrade => upgrade.key === key
   )!;
 
   const price = upgradePrice(key);
 
-  if (save.upgrades[key] >= item.max) {
-    return;
-  }
-
-  if (save.coins < price) {
+  if (
+    save.upgrades[key] >= item.max ||
+    save.coins < price
+  ) {
     return;
   }
 
@@ -734,10 +639,6 @@ function buyUpgrade(key: UpgradeKey): void {
 
   persist();
 }
-
-// ==========================================
-// SCREEN RESIZING
-// ==========================================
 
 function resize(): void {
   const oldWidth = width;
@@ -754,14 +655,7 @@ function resize(): void {
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
 
-  ctx.setTransform(
-    ratio,
-    0,
-    0,
-    ratio,
-    0,
-    0
-  );
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
 
   if (!initialized) {
     player.x = width / 2;
@@ -787,11 +681,8 @@ function resize(): void {
 }
 
 window.addEventListener("resize", resize);
-resize();
 
-// ==========================================
-// JOYSTICK
-// ==========================================
+resize();
 
 const joystickHome = () => ({
   x: Math.min(83, width * 0.23),
@@ -813,14 +704,12 @@ function updateJoystick(
 
   const dx = x - home.x;
   const dy = y - home.y;
+
   const distance = Math.hypot(dx, dy);
 
   const factor = Math.min(
     1,
-    JOYSTICK_RADIUS / Math.max(
-      1,
-      distance
-    )
+    JOYSTICK_RADIUS / Math.max(1, distance)
   );
 
   joystick.dx =
@@ -834,10 +723,6 @@ function updateJoystick(
       : dy * factor / JOYSTICK_RADIUS;
 }
 
-// ==========================================
-// PAUSE SYSTEM
-// ==========================================
-
 function pauseGame(): void {
   gameScreen = "paused";
   resetJoystick();
@@ -850,10 +735,8 @@ function resumeGame(): void {
 
 function abandonRun(): void {
   runCoins = 0;
-
   zombies.length = 0;
   bullets.length = 0;
-
   waveBreak = 0;
 
   resetJoystick();
@@ -870,19 +753,12 @@ function pauseButtonBounds() {
   };
 }
 
-// ==========================================
-// KEYBOARD CONTROLS
-// ==========================================
-
 window.addEventListener("keydown", event => {
   const key = event.key.toLowerCase();
 
   keys.add(key);
 
-  if (
-    key === "escape" ||
-    key === "p"
-  ) {
+  if (key === "escape" || key === "p") {
     if (gameScreen === "playing") {
       pauseGame();
     } else if (gameScreen === "paused") {
@@ -892,9 +768,7 @@ window.addEventListener("keydown", event => {
 });
 
 window.addEventListener("keyup", event => {
-  keys.delete(
-    event.key.toLowerCase()
-  );
+  keys.delete(event.key.toLowerCase());
 });
 
 window.addEventListener("blur", () => {
@@ -906,20 +780,12 @@ window.addEventListener("blur", () => {
   }
 });
 
-// ==========================================
-// I ALREADY FOUND YOU :)
-// ==========================================
-
-// ==========================================
-// STOP TRYING TO HACK ME :(
-// ==========================================
-
-// TOUCH CONTROLS
-
 canvas.addEventListener("pointerdown", event => {
+  const profile = currentPlayer();
+
   if (
-    !currentPlayer() ||
-    activeSaveOwner !== currentPlayer()?.id
+    !profile ||
+    activeSaveOwner !== profile.id
   ) {
     return;
   }
@@ -958,11 +824,11 @@ canvas.addEventListener("pointerdown", event => {
 
   const button = [...buttons]
     .reverse()
-    .find(b =>
-      event.clientX >= b.x &&
-      event.clientX <= b.x + b.w &&
-      event.clientY >= b.y &&
-      event.clientY <= b.y + b.h
+    .find(item =>
+      event.clientX >= item.x &&
+      event.clientX <= item.x + item.w &&
+      event.clientY >= item.y &&
+      event.clientY <= item.y + item.h
     );
 
   button?.action();
@@ -983,9 +849,7 @@ canvas.addEventListener("pointermove", event => {
 function releasePointer(
   event: PointerEvent
 ): void {
-  if (
-    event.pointerId === joystick.pointerId
-  ) {
+  if (event.pointerId === joystick.pointerId) {
     resetJoystick();
   }
 }
@@ -1000,14 +864,12 @@ canvas.addEventListener(
   releasePointer
 );
 
-// ==========================================
-// START GAME
-// ==========================================
-
 function startGame(mode: GameMode): void {
+  const profile = currentPlayer();
+
   if (
-    !currentPlayer() ||
-    activeSaveOwner !== currentPlayer()?.id
+    !profile ||
+    activeSaveOwner !== profile.id
   ) {
     return;
   }
@@ -1031,12 +893,10 @@ function startGame(mode: GameMode): void {
   elapsed = 0;
   waveTime = 0;
   waveBreak = 0;
-
   spawnTimer = 0;
   shootTimer = 0;
   invulnerable = 0;
   lastMilestone = 0;
-
   noDamage = true;
 
   difficulty =
@@ -1050,25 +910,21 @@ function startGame(mode: GameMode): void {
   lastTime = 0;
 }
 
-// ==========================================
-// COIN REWARD SYSTEM
-// ==========================================
-
 function awardCoins(amount: number): void {
   if (
-    !Number.isFinite(amount) ||
-    amount <= 0
+    Number.isFinite(amount) &&
+    amount > 0
   ) {
-    return;
+    runCoins += Math.floor(amount);
   }
-
-  runCoins += Math.floor(amount);
 }
 
 function bankRunCoins(): void {
+  const profile = currentPlayer();
+
   if (
-    !currentPlayer() ||
-    activeSaveOwner !== currentPlayer()?.id
+    !profile ||
+    activeSaveOwner !== profile.id
   ) {
     return;
   }
@@ -1078,20 +934,14 @@ function bankRunCoins(): void {
   persist();
 }
 
-// ==========================================
-// CAMPAIGN LEVEL COMPLETION
-// ==========================================
-
 function finishCampaign(): void {
   const bonus = noDamage
     ? difficulty * 50
     : 0;
 
-  levelReward =
-    difficulty * 25 + bonus;
+  levelReward = difficulty * 25 + bonus;
 
   awardCoins(levelReward);
-
   bankRunCoins();
 
   save.campaignLevel++;
@@ -1102,10 +952,6 @@ function finishCampaign(): void {
 
   resetJoystick();
 }
-
-// ==========================================
-// GAME OVER
-// ==========================================
 
 function endGame(): void {
   bankRunCoins();
@@ -1124,14 +970,8 @@ function endGame(): void {
   resetJoystick();
 }
 
-// ==========================================
-// ZOMBIE SPAWNING
-// ==========================================
-
 function spawnZombie(): void {
-  const side = Math.floor(
-    Math.random() * 4
-  );
+  const side = Math.floor(Math.random() * 4);
 
   let x = 0;
   let y = 0;
@@ -1152,59 +992,38 @@ function spawnZombie(): void {
 
   const kind =
     Math.random() <
-    Math.min(
-      0.45,
-      0.1 + difficulty * 0.02
-    )
+    Math.min(0.45, 0.1 + difficulty * 0.02)
       ? 1
       : 0;
 
   const hp =
-    1 +
-    Math.floor(difficulty / 3) +
-    kind;
+    1 + Math.floor(difficulty / 3) + kind;
 
   zombies.push({
     x,
     y,
     hp,
     maxHp: hp,
-    speed:
-      45 +
-      difficulty * 5 -
-      kind * 8,
+    speed: 45 + difficulty * 5 - kind * 8,
     radius: kind ? 17 : 13,
     kind,
-    phase:
-      Math.random() *
-      Math.PI *
-      2
+    phase: Math.random() * Math.PI * 2
   });
 }
 
-// ==========================================
-// GAMEPLAY UPDATE
-// ==========================================
-
 function update(dt: number): void {
+  const profile = currentPlayer();
+
   if (
-    !currentPlayer() ||
-    activeSaveOwner !== currentPlayer()?.id
+    !profile ||
+    activeSaveOwner !== profile.id ||
+    gameScreen !== "playing"
   ) {
     return;
   }
 
-  if (gameScreen !== "playing") {
-    return;
-  }
-
-  // ENDLESS WAVE BREAK
-
   if (waveBreak > 0) {
-    waveBreak = Math.max(
-      0,
-      waveBreak - dt
-    );
+    waveBreak = Math.max(0, waveBreak - dt);
 
     if (waveBreak === 0) {
       difficulty++;
@@ -1216,8 +1035,6 @@ function update(dt: number): void {
   }
 
   elapsed += dt;
-
-  // ENDLESS SURVIVAL PROGRESSION
 
   if (gameMode === "endless") {
     waveTime += dt;
@@ -1232,7 +1049,6 @@ function update(dt: number): void {
         bullets.length = 0;
 
         resetJoystick();
-
         return;
       }
 
@@ -1251,8 +1067,6 @@ function update(dt: number): void {
       );
     }
   }
-
-  // PLAYER MOVEMENT
 
   let dx = 0;
   let dy = 0;
@@ -1293,10 +1107,7 @@ function update(dt: number): void {
   const length = Math.hypot(dx, dy);
 
   if (length > 0) {
-    const strength = Math.min(
-      1,
-      length
-    );
+    const strength = Math.min(1, length);
 
     player.x +=
       dx / length *
@@ -1313,21 +1124,13 @@ function update(dt: number): void {
 
   player.x = Math.max(
     player.radius,
-    Math.min(
-      width - player.radius,
-      player.x
-    )
+    Math.min(width - player.radius, player.x)
   );
 
   player.y = Math.max(
     player.radius,
-    Math.min(
-      height - player.radius,
-      player.y
-    )
+    Math.min(height - player.radius, player.y)
   );
-
-  // ZOMBIE SPAWNING TIMER
 
   spawnTimer -= dt;
 
@@ -1339,8 +1142,6 @@ function update(dt: number): void {
       1.5 - difficulty * 0.075
     );
   }
-
-  // AUTOMATIC SHOOTING
 
   shootTimer -= dt;
 
@@ -1377,22 +1178,11 @@ function update(dt: number): void {
       player.angle = angle;
 
       bullets.push({
-        x:
-          player.x +
-          Math.cos(angle) * 19,
-
-        y:
-          player.y +
-          Math.sin(angle) * 19,
-
-        vx:
-          Math.cos(angle) * 430,
-
-        vy:
-          Math.sin(angle) * 430,
-
+        x: player.x + Math.cos(angle) * 19,
+        y: player.y + Math.sin(angle) * 19,
+        vx: Math.cos(angle) * 430,
+        vy: Math.sin(angle) * 430,
         life: 1.5,
-
         damage: bulletDamage()
       });
 
@@ -1404,8 +1194,6 @@ function update(dt: number): void {
     0,
     invulnerable - dt
   );
-
-  // ZOMBIE MOVEMENT AND PLAYER DAMAGE
 
   for (const zombie of zombies) {
     if (zombie.hp <= 0) {
@@ -1420,14 +1208,10 @@ function update(dt: number): void {
     );
 
     zombie.x +=
-      Math.cos(angle) *
-      zombie.speed *
-      dt;
+      Math.cos(angle) * zombie.speed * dt;
 
     zombie.y +=
-      Math.sin(angle) *
-      zombie.speed *
-      dt;
+      Math.sin(angle) * zombie.speed * dt;
 
     const distance = Math.hypot(
       zombie.x - player.x,
@@ -1436,8 +1220,7 @@ function update(dt: number): void {
 
     if (
       distance <
-        zombie.radius +
-        player.radius &&
+        zombie.radius + player.radius &&
       invulnerable <= 0
     ) {
       const damage = Math.max(
@@ -1460,8 +1243,6 @@ function update(dt: number): void {
     }
   }
 
-  // BULLET MOVEMENT AND COLLISIONS
-
   for (const bullet of bullets) {
     bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
@@ -1481,10 +1262,7 @@ function update(dt: number): void {
         bullet.y - zombie.y
       );
 
-      if (
-        distance <
-        zombie.radius + 4
-      ) {
+      if (distance < zombie.radius + 4) {
         zombie.hp -= bullet.damage;
         bullet.life = 0;
 
@@ -1502,8 +1280,6 @@ function update(dt: number): void {
     }
   }
 
-  // REMOVE DEFEATED ZOMBIES
-
   for (
     let i = zombies.length - 1;
     i >= 0;
@@ -1513,8 +1289,6 @@ function update(dt: number): void {
       zombies.splice(i, 1);
     }
   }
-
-  // REMOVE EXPIRED BULLETS
 
   for (
     let i = bullets.length - 1;
@@ -1534,8 +1308,6 @@ function update(dt: number): void {
     }
   }
 
-  // CAMPAIGN LEVEL COMPLETION
-
   if (
     gameMode === "campaign" &&
     waveKills >= targetKills
@@ -1543,16 +1315,11 @@ function update(dt: number): void {
     finishCampaign();
   }
 }
+/// I ALREADY KNOW WHERE YOU ARE :)
 
-// ==========================================
-// I GUESS YOURE STILL HERE xdxdxd
-// ==========================================
-
-// ==========================================
-// APEX ZOMBIE SURVIVAL
-// ==========================================
-
-// DRAWING HELPERS
+ // ==========================================
+ // APEX ZOMBIE SURVIVAL
+ // ==========================================
 
 function drawText(
   value: string,
@@ -1599,10 +1366,6 @@ function drawBackground(): void {
     }
   }
 }
-
-// ==========================================
-// PLAYER GRAPHICS
-// ==========================================
 
 function drawPlayer(): void {
   ctx.save();
@@ -1668,10 +1431,6 @@ function drawPlayer(): void {
 
   ctx.restore();
 }
-
-// ==========================================
-// ZOMBIE GRAPHICS
-// ==========================================
 
 function drawZombie(zombie: Zombie): void {
   ctx.save();
@@ -1763,10 +1522,6 @@ function drawZombie(zombie: Zombie): void {
   }
 }
 
-// ==========================================
-// JOYSTICK GRAPHICS
-// ==========================================
-
 function drawJoystick(): void {
   const home = joystickHome();
 
@@ -1797,10 +1552,6 @@ function drawJoystick(): void {
   );
   ctx.fill();
 }
-
-// ==========================================
-// BUTTON DRAWING
-// ==========================================
 
 function addButton(
   label: string,
@@ -1857,10 +1608,6 @@ function drawPanel(title: string): void {
     "center"
   );
 }
-
-// ==========================================
-// MAIN MENU
-// ==========================================
 
 function drawMenu(): void {
   drawPanel("APEX ZOMBIE SURVIVAL");
@@ -1985,10 +1732,6 @@ function drawMenu(): void {
   );
 }
 
-// ==========================================
-// ADMINISTRATOR PLAYER LIST
-// ==========================================
-
 function drawAdminPlayerList(): void {
   if (adminPlayersLoading) {
     drawText(
@@ -2053,7 +1796,6 @@ function drawAdminPlayerList(): void {
       "#ffffff",
       "center"
     );
-
     return;
   }
 
@@ -2157,130 +1899,91 @@ function drawAdminPlayerList(): void {
       );
     }
   });
+/// TWAS A BAD IDEA :(
 
-  const navigationY = Math.min(
-    height - 120,
-    startY +
-      ADMIN_PLAYERS_PER_PAGE * rowHeight +
-      8
+  const pageY = Math.min(
+    height - 195,
+    (height < 740 ? 155 : 170) +
+      ADMIN_PLAYERS_PER_PAGE *
+        (height < 740 ? 70 : 82) + 8
   );
 
-  if (totalPages > 1) {
-    drawText(
-      `Page ${adminPlayersPage + 1} of ${totalPages}`,
-      width / 2,
-      navigationY - 10,
-      13,
-      "#ffffff",
-      "center"
+  drawText(
+    `PAGE ${adminPlayersPage + 1} / ${totalPages}`,
+    width / 2,
+    pageY,
+    12,
+    "#e8c66d",
+    "center"
+  );
+
+  if (adminPlayersPage > 0) {
+    addButton(
+      "PREVIOUS PAGE",
+      pageY + 10,
+      () => {
+        adminPlayersPage--;
+      }
     );
+  }
 
-    if (adminPlayersPage > 0) {
-      addButton(
-        "PREVIOUS PAGE",
-        navigationY + 5,
-        () => {
-          adminPlayersPage--;
-        }
-      );
-    }
-
-    if (
-      adminPlayersPage <
-      totalPages - 1
-    ) {
-      addButton(
-        "NEXT PAGE",
-        navigationY + 55,
-        () => {
-          adminPlayersPage++;
-        }
-      );
-    }
+  if (adminPlayersPage < totalPages - 1) {
+    addButton(
+      "NEXT PAGE",
+      pageY + 60,
+      () => {
+        adminPlayersPage++;
+      }
+    );
   }
 }
 
-// ==========================================
-// ADMINISTRATOR DASHBOARD
-// ==========================================
-
 function drawAdminDashboard(): void {
   if (!isAdministrator()) {
-    resetAdminPlayerData();
     gameScreen = "menu";
+    clearAdminPlayerData();
     return;
   }
 
   drawPanel("APEX ADMIN DASHBOARD");
 
-  const profile = currentPlayer();
-
-  drawText(
-    `Administrator: ${profile?.username ?? ""}`,
-    width / 2,
-    105,
-    14,
-    "#8ee29a",
-    "center"
-  );
-
   if (adminSection === "home") {
     drawText(
-      "ACCOUNT MANAGEMENT",
+      "ADMINISTRATOR CONTROL CENTER",
       width / 2,
-      145,
-      15,
-      "#e8c66d",
+      115,
+      14,
+      "#ffffff",
       "center"
     );
 
     const startY = Math.max(
-      170,
-      height / 2 - 145
+      145,
+      height / 2 - 160
     );
 
     const sections: {
-      label: string;
+      title: string;
       section: AdminSection;
     }[] = [
-      {
-        label: "PLAYER ACCOUNTS",
-        section: "players"
-      },
-      {
-        label: "GRANT PLAYER COINS",
-        section: "coins"
-      },
-      {
-        label: "LOCK / UNLOCK ACCOUNTS",
-        section: "locks"
-      },
-      {
-        label: "EDIT PLAYER ACCOUNTS",
-        section: "accounts"
-      },
-      {
-        label: "ADMIN ACTION HISTORY",
-        section: "history"
-      }
+      { title: "PLAYER ACCOUNTS", section: "players" },
+      { title: "COIN MANAGEMENT", section: "coins" },
+      { title: "LOCK / UNLOCK", section: "locks" },
+      { title: "ACCOUNT MANAGEMENT", section: "accounts" },
+      { title: "ADMIN ACTION HISTORY", section: "history" }
     ];
 
     sections.forEach((item, index) => {
       addButton(
-        item.label,
+        item.title,
         startY + index * 54,
         () => openAdminSection(item.section)
       );
     });
 
     addButton(
-      "RETURN TO MAIN MENU",
-      Math.min(
-        height - 75,
-        startY +
-          sections.length * 54 +
-          12
-      ),
+      "RETURN TO GAME",
+      Math.min(height - 100, startY + 285),
       closeAdminDashboard
     );
 
@@ -2289,19 +1992,19 @@ function drawAdminDashboard(): void {
 
   if (adminSection === "players") {
     drawText(
-      "PLAYER ACCOUNT DIRECTORY",
+      "LIVE SUPABASE PLAYER DIRECTORY",
       width / 2,
-      137,
-      15,
-      "#ffffff",
+      110,
+      13,
+      "#a5c9a5",
       "center"
     );
 
     drawAdminPlayerList();
 
     addButton(
-      "REFRESH PLAYER LIST",
-      height - 115,
+      "REFRESH ACCOUNTS",
+      height - 150,
       () => {
         void loadAdminPlayers();
       }
@@ -2309,9 +2012,8 @@ function drawAdminDashboard(): void {
 
     addButton(
       "BACK TO ADMIN MENU",
-      height - 62,
+      height - 90,
       () => {
-        resetAdminPlayerData();
         adminSection = "home";
       }
     );
@@ -2319,353 +2021,85 @@ function drawAdminDashboard(): void {
     return;
   }
 
-  const titles: Record<
+  const labels: Record<
     Exclude<AdminSection, "home" | "players">,
     string
   > = {
-    coins: "GRANT PLAYER COINS",
-    locks: "ACCOUNT ACCESS CONTROL",
-    accounts: "EDIT PLAYER ACCOUNTS",
+    coins: "COIN MANAGEMENT",
+    locks: "LOCK / UNLOCK ACCOUNTS",
+    accounts: "ACCOUNT MANAGEMENT",
     history: "ADMIN ACTION HISTORY"
   };
 
   drawText(
-    titles[adminSection],
+    labels[adminSection],
     width / 2,
-    155,
-    17,
-    "#ffffff",
-    "center"
-  );
-
-  drawText(
-    "Backend integration pending",
-    width / 2,
-    height / 2 - 25,
-    15,
+    height / 2 - 45,
+    19,
     "#e8c66d",
     "center"
   );
 
   drawText(
-    "No account changes are enabled yet.",
+    "Section integration coming next.",
     width / 2,
-    height / 2 + 5,
-    12,
-    "#b7b7b7",
+    height / 2,
+    13,
+    "#ffffff",
     "center"
   );
 
   addButton(
     "BACK TO ADMIN MENU",
-    Math.min(
-      height - 85,
-      height / 2 + 65
-    ),
+    height - 100,
     () => {
       adminSection = "home";
     }
   );
 }
 
-// ==========================================
-// UPGRADE SHOP
-// ==========================================
-
 function drawShop(): void {
-  drawPanel("SURVIVOR UPGRADE SHOP");
+  drawPanel("UPGRADE SHOP");
 
   drawText(
-    `Available Coins: ${save.coins}`,
+    `AVAILABLE COINS: ${save.coins}`,
     width / 2,
     105,
-    17,
-    "#ffffff",
+    16,
+    "#e8c66d",
     "center"
   );
 
-  const compact = height < 700;
-  const gap = compact ? 52 : 65;
-  const startY = compact ? 130 : 155;
+  const startY = Math.max(
+    145,
+    height / 2 - 160
+  );
 
   upgradeInfo.forEach((item, index) => {
-    const rank = save.upgrades[item.key];
+    const level = save.upgrades[item.key];
+
     const price = upgradePrice(item.key);
 
     const label =
-      rank >= item.max
-        ? `${item.name} | MAX`
-        : `${item.name} Lv.${rank} | ${price} coins`;
+      level >= item.max
+        ? `${item.name} — MAX LEVEL`
+        : `${item.name} LV ${level} — ${price} COINS`;
 
     addButton(
       label,
-      startY + index * gap,
+      startY + index * 54,
       () => buyUpgrade(item.key)
     );
   });
 
   addButton(
     "BACK",
-    Math.min(
-      height - 65,
-      startY +
-        upgradeInfo.length * gap +
-        5
-    ),
+    height - 95,
     () => {
       gameScreen = shopReturn;
     }
   );
 }
-
-// ==========================================
-// CAMPAIGN COMPLETION SCREEN
-// ==========================================
-
-function drawComplete(): void {
-  drawPanel("LEVEL COMPLETED!");
-
-  drawText(
-    `Campaign Level ${save.campaignLevel - 1}`,
-    width / 2,
-    120,
-    19,
-    "#ffffff",
-    "center"
-  );
-
-  drawText(
-    noDamage
-      ? "PERFECT RUN BONUS!"
-      : "LEVEL CLEARED",
-    width / 2,
-    160,
-    18,
-    "#8ee29a",
-    "center"
-  );
-
-  drawText(
-    `Completion Reward: ${levelReward}`,
-    width / 2,
-    200,
-    16,
-    "#e8c66d",
-    "center"
-  );
-
-  drawText(
-    `Total Earned: ${runCoins}`,
-    width / 2,
-    235,
-    16,
-    "#ffffff",
-    "center"
-  );
-
-  const startY = Math.max(
-    270,
-    height / 2
-  );
-
-  addButton(
-    "NEXT LEVEL",
-    startY,
-    () => startGame("campaign")
-  );
-
-  addButton(
-    "UPGRADE SHOP",
-    startY + 60,
-    () => {
-      shopReturn = "complete";
-      gameScreen = "shop";
-    }
-  );
-
-  addButton(
-    "MAIN MENU",
-    startY + 120,
-    () => {
-      gameScreen = "menu";
-    }
-  );
-}
-
-// ==========================================
-// GAME OVER SCREEN
-// ==========================================
-
-function drawGameOver(): void {
-  drawPanel("GAME OVER");
-
-  drawText(
-    gameMode === "endless"
-      ? "ENDLESS SURVIVAL"
-      : "CAMPAIGN FAILED",
-    width / 2,
-    125,
-    19,
-    "#ff7777",
-    "center"
-  );
-
-  drawText(
-    `Zombies Killed: ${kills}`,
-    width / 2,
-    170,
-    17,
-    "#ffffff",
-    "center"
-  );
-
-  drawText(
-    `Coins Earned: ${runCoins}`,
-    width / 2,
-    205,
-    17,
-    "#e8c66d",
-    "center"
-  );
-
-  if (gameMode === "endless") {
-    drawText(
-      `Best Record: ${save.bestEndless}`,
-      width / 2,
-      240,
-      16,
-      "#ffffff",
-      "center"
-    );
-  }
-
-  const startY = Math.max(
-    270,
-    height / 2
-  );
-
-  addButton(
-    "RETRY",
-    startY,
-    () => startGame(gameMode)
-  );
-
-  addButton(
-    "MAIN MENU",
-    startY + 60,
-    () => {
-      gameScreen = "menu";
-    }
-  );
-}
-
-// ==========================================
-// PAUSE MENU
-// ==========================================
-
-function drawPaused(): void {
-  drawGame();
-
-  ctx.fillStyle = "rgba(0,0,0,0.84)";
-  ctx.fillRect(0, 0, width, height);
-
-  drawText(
-    "GAME PAUSED",
-    width / 2,
-    height / 2 - 115,
-    26,
-    "#e8c66d",
-    "center"
-  );
-
-  drawText(
-    `Pending Coins: ${runCoins}`,
-    width / 2,
-    height / 2 - 75,
-    15,
-    "#ffffff",
-    "center"
-  );
-
-  addButton(
-    "RESUME GAME",
-    height / 2 - 35,
-    resumeGame
-  );
-
-  addButton(
-    "EXIT TO MAIN MENU",
-    height / 2 + 30,
-    () => {
-      gameScreen = "confirmExit";
-    }
-  );
-}
-
-// ==========================================
-// EXIT CONFIRMATION
-// ==========================================
-
-function drawConfirmExit(): void {
-  drawGame();
-
-  ctx.fillStyle = "rgba(0,0,0,0.92)";
-  ctx.fillRect(0, 0, width, height);
-
-  drawText(
-    "LEAVE CURRENT GAME?",
-    width / 2,
-    height / 2 - 125,
-    21,
-    "#ff8d7c",
-    "center"
-  );
-
-  drawText(
-    "Current run progress and coins",
-    width / 2,
-    height / 2 - 85,
-    14,
-    "#ffffff",
-    "center"
-  );
-
-  drawText(
-    "will NOT be saved.",
-    width / 2,
-    height / 2 - 63,
-    14,
-    "#ffffff",
-    "center"
-  );
-
-  drawText(
-    `You will lose ${runCoins} pending coins.`,
-    width / 2,
-    height / 2 - 28,
-    14,
-    "#e8c66d",
-    "center"
-  );
-
-  addButton(
-    "CANCEL",
-    height / 2 + 5,
-    () => {
-      gameScreen = "paused";
-    }
-  );
-
-  addButton(
-    "EXIT GAME",
-    height / 2 + 70,
-    abandonRun
-  );
-}
-
-// ==========================================
-// GAMEPLAY DISPLAY
-// ==========================================
 
 function drawGame(): void {
   drawBackground();
@@ -2674,11 +2108,10 @@ function drawGame(): void {
     drawZombie(zombie);
   }
 
-  ctx.fillStyle = "#ffdf74";
-
   for (const bullet of bullets) {
-    ctx.beginPath();
+    ctx.fillStyle = "#ffe6a0";
 
+    ctx.beginPath();
     ctx.arc(
       bullet.x,
       bullet.y,
@@ -2686,86 +2119,52 @@ function drawGame(): void {
       0,
       Math.PI * 2
     );
-
     ctx.fill();
   }
 
   drawPlayer();
 
-  ctx.fillStyle = "rgba(8,14,10,0.84)";
-  ctx.fillRect(0, 0, width, 115);
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(10, 10, 195, 90);
 
   drawText(
-    "APEX SURVIVAL",
-    15,
-    25,
-    17,
+    `HP: ${Math.ceil(player.hp)} / ${player.maxHp}`,
+    20,
+    32,
+    14,
+    "#ffffff"
+  );
+
+  drawText(
+    `KILLS: ${kills}`,
+    20,
+    54,
+    14,
     "#e8c66d"
   );
 
   drawText(
-    `HP ${player.hp}/${player.maxHp}`,
-    15,
-    47,
-    13
-  );
-
-  const barWidth = Math.min(
-    width - 30,
-    245
-  );
-
-  ctx.fillStyle = "#502525";
-  ctx.fillRect(
-    15,
-    57,
-    barWidth,
-    12
-  );
-
-  ctx.fillStyle =
-    player.hp > player.maxHp * 0.3
-      ? "#65cc77"
-      : "#ef6b62";
-
-  ctx.fillRect(
-    15,
-    57,
-    barWidth *
-      player.hp /
-      player.maxHp,
-    12
+    `COINS: ${runCoins}`,
+    20,
+    76,
+    14,
+    "#e8c66d"
   );
 
   drawText(
-    `Coins ${save.coins} (+${runCoins}) | Kills ${kills}`,
-    15,
-    90,
-    13
+    gameMode === "campaign"
+      ? `LEVEL ${save.campaignLevel}: ${waveKills}/${targetKills}`
+      : `ENDLESS WAVE ${difficulty}`,
+    width / 2,
+    32,
+    14,
+    "#ffffff",
+    "center"
   );
-
-  if (gameMode === "campaign") {
-    drawText(
-      `LEVEL ${difficulty} | ${waveKills}/${targetKills}`,
-      15,
-      109,
-      13,
-      "#e8c66d"
-    );
-  } else {
-    drawText(
-      `ENDLESS | WAVE ${difficulty}`,
-      15,
-      109,
-      13,
-      "#e8c66d"
-    );
-  }
 
   const pause = pauseButtonBounds();
 
   ctx.fillStyle = "#a78439";
-
   ctx.fillRect(
     pause.x,
     pause.y,
@@ -2773,209 +2172,334 @@ function drawGame(): void {
     pause.h
   );
 
-  ctx.fillStyle = "#101510";
-
-  ctx.fillRect(
-    pause.x + 14,
-    pause.y + 11,
-    6,
-    20
-  );
-
-  ctx.fillRect(
-    pause.x + 28,
-    pause.y + 11,
-    6,
-    20
+  drawText(
+    "II",
+    pause.x + pause.w / 2,
+    pause.y + 28,
+    20,
+    "#101510",
+    "center"
   );
 
   drawJoystick();
 
   if (waveBreak > 0) {
-    ctx.fillStyle = "rgba(0,0,0,0.7)";
-
-    ctx.fillRect(
-      0,
-      height / 2 - 85,
-      width,
-      170
-    );
-
     drawText(
-      "WAVE BREAK",
+      `NEXT WAVE IN ${Math.ceil(waveBreak)}`,
       width / 2,
-      height / 2 - 25,
-      24,
+      height / 2,
+      22,
       "#e8c66d",
       "center"
     );
+  }
+}
 
+function drawPaused(): void {
+  drawPanel("GAME PAUSED");
+
+  drawText(
+    `KILLS: ${kills}`,
+    width / 2,
+    height / 2 - 95,
+    18,
+    "#ffffff",
+    "center"
+  );
+
+  drawText(
+    `RUN COINS: ${runCoins}`,
+    width / 2,
+    height / 2 - 65,
+    16,
+    "#e8c66d",
+    "center"
+  );
+
+  addButton(
+    "RESUME GAME",
+    height / 2 - 25,
+    resumeGame
+  );
+
+  addButton(
+    "RESTART RUN",
+    height / 2 + 35,
+    () => startGame(gameMode)
+  );
+
+  addButton(
+    "EXIT TO MENU",
+    height / 2 + 95,
+    () => {
+      gameScreen = "confirmExit";
+    }
+  );
+}
+
+function drawConfirmExit(): void {
+  drawPanel("EXIT CURRENT RUN?");
+
+  drawText(
+    "Unbanked run coins will be lost.",
+    width / 2,
+    height / 2 - 70,
+    14,
+    "#ff9999",
+    "center"
+  );
+
+  addButton(
+    "CANCEL",
+    height / 2 - 15,
+    () => {
+      gameScreen = "paused";
+    }
+  );
+
+  addButton(
+    "EXIT WITHOUT SAVING",
+    height / 2 + 45,
+    abandonRun
+  );
+}
+
+function drawComplete(): void {
+  drawPanel("LEVEL COMPLETED");
+
+  drawText(
+    `LEVEL ${save.campaignLevel - 1} CLEARED`,
+    width / 2,
+    height / 2 - 115,
+    19,
+    "#a5e8a5",
+    "center"
+  );
+
+  drawText(
+    `KILLS: ${kills}`,
+    width / 2,
+    height / 2 - 80,
+    16,
+    "#ffffff",
+    "center"
+  );
+
+  drawText(
+    `TOTAL RUN REWARD: ${runCoins}`,
+    width / 2,
+    height / 2 - 50,
+    16,
+    "#e8c66d",
+    "center"
+  );
+
+  if (noDamage) {
     drawText(
-      String(Math.ceil(waveBreak)),
+      "PERFECT LEVEL BONUS!",
       width / 2,
-      height / 2 + 35,
-      44,
-      "#ffffff",
+      height / 2 - 20,
+      14,
+      "#a5e8a5",
       "center"
     );
   }
+
+  addButton(
+    "NEXT LEVEL",
+    height / 2 + 25,
+    () => startGame("campaign")
+  );
+
+  addButton(
+    "UPGRADE SHOP",
+    height / 2 + 85,
+    () => {
+      shopReturn = "complete";
+      gameScreen = "shop";
+    }
+  );
+
+  addButton(
+    "MAIN MENU",
+    height / 2 + 145,
+    () => {
+      gameScreen = "menu";
+    }
+  );
 }
 
-// ==========================================
-// SCREEN RENDERING
-// ==========================================
+function drawGameOver(): void {
+  drawPanel("GAME OVER");
 
-function draw(): void {
+  drawText(
+    `TOTAL KILLS: ${kills}`,
+    width / 2,
+    height / 2 - 100,
+    18,
+    "#ffffff",
+    "center"
+  );
+
+  drawText(
+    `COINS EARNED: ${runCoins}`,
+    width / 2,
+    height / 2 - 65,
+    16,
+    "#e8c66d",
+    "center"
+  );
+
+  drawText(
+    `WALLET BALANCE: ${save.coins}`,
+    width / 2,
+    height / 2 - 35,
+    15,
+    "#ffffff",
+    "center"
+  );
+
+  addButton(
+    "TRY AGAIN",
+    height / 2 + 15,
+    () => startGame(gameMode)
+  );
+
+  addButton(
+    "MAIN MENU",
+    height / 2 + 75,
+    () => {
+      gameScreen = "menu";
+    }
+  );
+}
+
+function showError(error: unknown): void {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  console.error("APEX Zombie Survival:", message);
+
+  window.alert(message);
+}
+
+function render(): void {
   buttons = [];
 
-  switch (gameScreen) {
-    case "playing":
-      drawGame();
-      break;
+  ctx.clearRect(0, 0, width, height);
 
-    case "paused":
-      drawPaused();
-      break;
+  if (gameScreen === "playing") {
+    drawGame();
+    return;
+  }
 
-    case "confirmExit":
-      drawConfirmExit();
-      break;
+  if (gameScreen === "menu") {
+    drawMenu();
+    return;
+  }
 
-    case "menu":
-      drawMenu();
-      break;
+  if (gameScreen === "admin") {
+    drawAdminDashboard();
+    return;
+  }
 
-    case "shop":
-      drawShop();
-      break;
+  if (gameScreen === "shop") {
+    drawShop();
+    return;
+  }
 
-    case "complete":
-      drawComplete();
-      break;
+  if (gameScreen === "paused") {
+    drawPaused();
+    return;
+  }
 
-    case "gameover":
-      drawGameOver();
-      break;
+  if (gameScreen === "confirmExit") {
+    drawConfirmExit();
+    return;
+  }
 
-    case "admin":
-      drawAdminDashboard();
-      break;
+  if (gameScreen === "complete") {
+    drawComplete();
+    return;
+  }
+
+  if (gameScreen === "gameover") {
+    drawGameOver();
   }
 }
 
-// ==========================================
-// ERROR HANDLING
-// ==========================================
+function frame(timestamp: number): void {
+  if (lastTime === 0) {
+    lastTime = timestamp;
+  }
 
-function showError(error: unknown): void {
-  console.error(
-    "APEX Zombie Survival error:",
-    error
-  );
-
-  const message = document.createElement("pre");
-
-  message.textContent =
-    `Game error: ${String(error)}`;
-
-  message.style.cssText =
-    "position:fixed;" +
-    "top:20px;" +
-    "left:10px;" +
-    "right:10px;" +
-    "padding:15px;" +
-    "background:#111;" +
-    "color:#ff7777;" +
-    "white-space:pre-wrap;" +
-    "z-index:9999;";
-
-  document.body.appendChild(message);
-}
-
-// ==========================================
-// MAIN GAME LOOP
-// ==========================================
-
-function frame(time: number): void {
   const dt = Math.min(
-    (time - (lastTime || time)) / 1000,
+    (timestamp - lastTime) / 1000,
     0.05
   );
 
-  lastTime = time;
+  lastTime = timestamp;
 
-  try {
+  if (gameScreen === "playing") {
     update(dt);
-    draw();
-  } catch (error) {
-    showError(error);
-    return;
   }
+
+  render();
 
   requestAnimationFrame(frame);
 }
 
-requestAnimationFrame(frame);
-
-// ==========================================
-// SUPABASE AUTHENTICATION INTEGRATION
-// ==========================================
-
 onProfileChange(profile => {
-  const nextPlayerId = profile?.id ?? null;
+  if (!profile || profile.is_disabled) {
+    activeSaveOwner = null;
+    save = defaultSave();
 
-  if (nextPlayerId === activeSaveOwner) {
-    if (
-      !profile?.is_admin &&
-      gameScreen === "admin"
-    ) {
-      resetAdminPlayerData();
-      adminSection = "home";
-      gameScreen = "menu";
-    }
+    clearAdminPlayerData();
+    adminSection = "home";
+
+    gameScreen = "menu";
+    resetJoystick();
 
     return;
   }
 
-  resetAdminPlayerData();
+  if (activeSaveOwner !== profile.id) {
+    clearAdminPlayerData();
+    adminSection = "home";
 
-  gameScreen = "menu";
-  adminSection = "home";
+    gameScreen = "menu";
+    resetJoystick();
 
-  resetJoystick();
-  keys.clear();
-
-  zombies.length = 0;
-  bullets.length = 0;
-
-  runCoins = 0;
-  waveKills = 0;
-  kills = 0;
-  waveBreak = 0;
-  waveTime = 0;
-
-  lastTime = 0;
-
-  save = defaultSave();
-  activeSaveOwner = null;
-
-  if (!profile) {
-    return;
+    activatePlayerSave(profile);
   }
 
-  activatePlayerSave(profile);
+  if (
+    !profile.is_admin &&
+    gameScreen === "admin"
+  ) {
+    gameScreen = "menu";
+    clearAdminPlayerData();
+  }
 });
 
-// ==========================================
-// INITIALIZE LOGIN SYSTEM
-// ==========================================
+async function initializeGame(): Promise<void> {
+  try {
+    await initializeAuth();
 
-void initializeAuth()
-  .then(() => {
     startAccountLockMonitor();
-  })
-  .catch(showError);
 
-// ==========================================
-// APEX ZOMBIE SURVIVAL
-// ==========================================
+    const profile = currentPlayer();
+
+    if (profile && !profile.is_disabled) {
+      activatePlayerSave(profile);
+    }
+
+    requestAnimationFrame(frame);
+  } catch (error) {
+    showError(error);
+  }
+}
+
+void initializeGame();
