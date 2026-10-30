@@ -2,26 +2,23 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-
 const ANON_KEY =
   Deno.env.get("SUPABASE_ANON_KEY") ??
   Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
-
-const SERVICE_KEY =
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const adminDb = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: {
     autoRefreshToken: false,
-    persistSession: false
-  }
+    persistSession: false,
+  },
 });
 
 const authClient = createClient(SUPABASE_URL, ANON_KEY, {
   auth: {
     autoRefreshToken: false,
-    persistSession: false
-  }
+    persistSession: false,
+  },
 });
 
 const corsHeaders = {
@@ -29,16 +26,13 @@ const corsHeaders = {
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Content-Type": "application/json"
+  "Content-Type": "application/json",
 };
 
-function respond(
-  data: unknown,
-  status = 200
-): Response {
+function respond(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: corsHeaders
+    headers: corsHeaders,
   });
 }
 
@@ -85,11 +79,11 @@ async function audit(
       admin_id: adminId,
       target_player_id: targetId,
       action,
-      details
+      details,
     });
 
   if (error) {
-    console.error("Audit log failed:", error);
+    console.error("Audit logging failed:", error);
     throw new Error("Audit logging failed");
   }
 }
@@ -98,45 +92,35 @@ Deno.serve(async (request: Request) => {
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: corsHeaders
+      headers: corsHeaders,
     });
   }
 
   if (request.method !== "POST") {
-    return respond(
-      { error: "Method not allowed" },
-      405
-    );
+    return respond({ error: "Method not allowed" }, 405);
   }
 
   try {
+    // VERIFY AUTHENTICATED ADMINISTRATOR
+
     const authorization =
       request.headers.get("Authorization") ?? "";
 
     if (!authorization.startsWith("Bearer ")) {
-      return respond(
-        { error: "Login required" },
-        401
-      );
+      return respond({ error: "Login required" }, 401);
     }
 
     const token = authorization.slice(7).trim();
 
     if (!token) {
-      return respond(
-        { error: "Invalid session" },
-        401
-      );
+      return respond({ error: "Invalid session" }, 401);
     }
 
     const { data: authData, error: authError } =
       await authClient.auth.getUser(token);
 
     if (authError || !authData.user) {
-      return respond(
-        { error: "Invalid session" },
-        401
-      );
+      return respond({ error: "Invalid session" }, 401);
     }
 
     const adminId = authData.user.id;
@@ -160,6 +144,8 @@ Deno.serve(async (request: Request) => {
       );
     }
 
+    // PARSE REQUEST
+
     let body: Record<string, unknown>;
 
     try {
@@ -170,23 +156,19 @@ Deno.serve(async (request: Request) => {
         typeof parsed !== "object" ||
         Array.isArray(parsed)
       ) {
-        return respond(
-          { error: "Invalid request" },
-          400
-        );
+        return respond({ error: "Invalid request" }, 400);
       }
 
       body = parsed as Record<string, unknown>;
     } catch {
-      return respond(
-        { error: "Invalid JSON" },
-        400
-      );
+      return respond({ error: "Invalid JSON" }, 400);
     }
 
     const action = body.action;
 
-    // LIST PLAYER ACCOUNTS
+    // ==========================================
+    // LIST PLAYERS
+    // ==========================================
 
     if (action === "list_players") {
       const { data, error } = await adminDb
@@ -194,21 +176,19 @@ Deno.serve(async (request: Request) => {
         .select(
           "id, username, is_admin, is_disabled, coins, campaign_level, best_endless, created_at"
         )
-        .order("created_at", {
-          ascending: false
-        })
+        .order("created_at", { ascending: false })
         .limit(200);
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       return respond({
-        players: data ?? []
+        players: data ?? [],
       });
     }
 
-    // CREATE PLAYER ACCOUNT
+    // ==========================================
+    // CREATE PLAYER
+    // ==========================================
 
     if (action === "create_player") {
       const username = body.username;
@@ -218,7 +198,7 @@ Deno.serve(async (request: Request) => {
         return respond(
           {
             error:
-              "Username must be 3-24 characters: letters, numbers or underscores"
+              "Username must be 3-24 characters using letters, numbers, or underscores",
           },
           400
         );
@@ -227,8 +207,7 @@ Deno.serve(async (request: Request) => {
       if (!validPassword(password)) {
         return respond(
           {
-            error:
-              "Password must contain 12-128 characters"
+            error: "Password must contain 12-128 characters",
           },
           400
         );
@@ -241,9 +220,7 @@ Deno.serve(async (request: Request) => {
           .ilike("username", username)
           .limit(1);
 
-      if (lookupError) {
-        throw lookupError;
-      }
+      if (lookupError) throw lookupError;
 
       if (existing && existing.length > 0) {
         return respond(
@@ -252,8 +229,6 @@ Deno.serve(async (request: Request) => {
         );
       }
 
-      // Generate an internal authentication identity.
-
       const internalEmail =
         `player-${crypto.randomUUID()}@accounts.invalid`;
 
@@ -261,7 +236,7 @@ Deno.serve(async (request: Request) => {
         await adminDb.auth.admin.createUser({
           email: internalEmail,
           password,
-          email_confirm: true
+          email_confirm: true,
         });
 
       if (createError || !created.user) {
@@ -270,8 +245,6 @@ Deno.serve(async (request: Request) => {
       }
 
       const playerId = created.user.id;
-
-      // Create the player's profile.
 
       const { error: profileError } =
         await adminDb
@@ -283,7 +256,7 @@ Deno.serve(async (request: Request) => {
             is_disabled: false,
             coins: 0,
             campaign_level: 1,
-            best_endless: 0
+            best_endless: 0,
           });
 
       if (profileError) {
@@ -299,21 +272,17 @@ Deno.serve(async (request: Request) => {
         throw profileError;
       }
 
-      // Initialize the player's upgrades.
-
       const { error: upgradesError } =
         await adminDb
           .from("player_upgrades")
           .insert({
-            player_id: playerId
+            player_id: playerId,
           });
 
       if (upgradesError) {
         await adminDb.auth.admin.deleteUser(playerId);
         throw upgradesError;
       }
-
-      // Record the administrator action.
 
       await audit(
         adminId,
@@ -329,23 +298,26 @@ Deno.serve(async (request: Request) => {
             id: playerId,
             username,
             coins: 0,
-            campaign_level: 1
-          }
+            campaign_level: 1,
+          },
         },
         201
       );
     }
 
-    // ADD COINS TO PLAYER
+    // ==========================================
+    // ADD COINS
+    // ==========================================
 
     if (action === "add_coins") {
       const playerId = body.player_id;
       const amount = body.amount;
 
       if (!validUuid(playerId)) {
-        return respond({
-          error: "Invalid player ID"
-        }, 400);
+        return respond(
+          { error: "Invalid player ID" },
+          400
+        );
       }
 
       if (
@@ -354,9 +326,12 @@ Deno.serve(async (request: Request) => {
         amount < 1 ||
         amount > 1000000
       ) {
-        return respond({
-          error: "Amount must be 1 to 1,000,000 coins"
-        }, 400);
+        return respond(
+          {
+            error: "Amount must be 1 to 1,000,000 coins",
+          },
+          400
+        );
       }
 
       const { data, error } = await adminDb.rpc(
@@ -364,25 +339,30 @@ Deno.serve(async (request: Request) => {
         {
           p_admin_id: adminId,
           p_player_id: playerId,
-          p_amount: amount
+          p_amount: amount,
         }
       );
 
       if (error) throw error;
 
-      if (!data) {
-        return respond({
-          error: "Player not found or not eligible"
-        }, 404);
+      if (data === null || data === undefined) {
+        return respond(
+          {
+            error: "Coin grant returned no balance",
+          },
+          500
+        );
       }
 
       return respond({
         success: true,
-        new_balance: data
+        new_balance: data,
       });
     }
 
-    // DISABLE OR ENABLE PLAYER ACCOUNT
+    // ==========================================
+    // LOCK OR UNLOCK PLAYER
+    // ==========================================
 
     if (action === "set_disabled") {
       const playerId = body.player_id;
@@ -392,15 +372,102 @@ Deno.serve(async (request: Request) => {
         !validUuid(playerId) ||
         typeof disabled !== "boolean"
       ) {
-        return respond({
-          error: "Invalid account update"
-        }, 400);
+        return respond(
+          { error: "Invalid account update" },
+          400
+        );
       }
 
       if (playerId === adminId) {
+        return respond(
+          {
+            error: "Cannot modify your own administrator account",
+          },
+          403
+        );
+      }
+
+      const { data: target, error: targetError } =
+        await adminDb
+          .from("player_profiles")
+          .select("id, username, is_admin, is_disabled")
+          .eq("id", playerId)
+          .single();
+
+      if (targetError || !target) {
+        return respond(
+          { error: "Player not found" },
+          404
+        );
+      }
+
+      if (target.is_admin) {
+        return respond(
+          {
+            error: "Cannot modify another administrator",
+          },
+          403
+        );
+      }
+
+      if (target.is_disabled === disabled) {
         return respond({
-          error: "Cannot disable your own admin account"
-        }, 400);
+          success: true,
+          disabled,
+          unchanged: true,
+        });
+      }
+
+      const { data: updated, error: updateError } =
+        await adminDb
+          .from("player_profiles")
+          .update({ is_disabled: disabled })
+          .eq("id", playerId)
+          .eq("is_admin", false)
+          .select("id, is_disabled")
+          .single();
+
+      if (updateError) throw updateError;
+
+      await audit(
+        adminId,
+        playerId,
+        disabled ? "disable_player" : "enable_player",
+        {
+          username: target.username,
+          previous_disabled: target.is_disabled,
+          new_disabled: updated.is_disabled,
+        }
+      );
+
+      return respond({
+        success: true,
+        disabled: updated.is_disabled,
+      });
+    }
+
+    // ==========================================
+    // RESET PLAYER PASSWORD
+    // ==========================================
+
+    if (action === "reset_password") {
+      const playerId = body.player_id;
+      const password = body.password;
+
+      if (!validUuid(playerId)) {
+        return respond(
+          { error: "Invalid player ID" },
+          400
+        );
+      }
+
+      if (!validPassword(password)) {
+        return respond(
+          {
+            error: "Password must contain 12-128 characters",
+          },
+          400
+        );
       }
 
       const { data: target, error: targetError } =
@@ -411,80 +478,19 @@ Deno.serve(async (request: Request) => {
           .single();
 
       if (targetError || !target) {
-        return respond({
-          error: "Player not found"
-        }, 404);
+        return respond(
+          { error: "Player not found" },
+          404
+        );
       }
 
       if (target.is_admin) {
-        return respond({
-          error: "Cannot change another administrator"
-        }, 403);
-      }
-
-      const { error: updateError } =
-        await adminDb
-          .from("player_profiles")
-          .update({ is_disabled: disabled })
-          .eq("id", playerId);
-
-      if (updateError) throw updateError;
-
-      if (disabled) {
-        const { error: signOutError } =
-          await adminDb.auth.admin.signOut(
-            playerId,
-            "global"
-          );
-
-        if (signOutError) throw signOutError;
-      }
-
-      await audit(
-        adminId,
-        playerId,
-        disabled ? "disable_player" : "enable_player",
-        { username: target.username }
-      );
-
-      return respond({
-        success: true,
-        disabled
-      });
-    }
-
-    // RESET PLAYER PASSWORD
-
-    if (action === "reset_password") {
-      const playerId = body.player_id;
-      const password = body.password;
-
-      if (
-        !validUuid(playerId) ||
-        !validPassword(password)
-      ) {
-        return respond({
-          error: "Invalid player ID or password"
-        }, 400);
-      }
-
-      const { data: target, error: targetError } =
-        await adminDb
-          .from("player_profiles")
-          .select("id, is_admin")
-          .eq("id", playerId)
-          .single();
-
-      if (targetError || !target) {
-        return respond({
-          error: "Player not found"
-        }, 404);
-      }
-
-      if (target.is_admin) {
-        return respond({
-          error: "Cannot reset an administrator password"
-        }, 403);
+        return respond(
+          {
+            error: "Cannot reset administrator passwords",
+          },
+          403
+        );
       }
 
       const { error: passwordError } =
@@ -495,42 +501,44 @@ Deno.serve(async (request: Request) => {
 
       if (passwordError) throw passwordError;
 
-      const { error: signOutError } =
-        await adminDb.auth.admin.signOut(
-          playerId,
-          "global"
-        );
-
-      if (signOutError) throw signOutError;
-
       await audit(
         adminId,
         playerId,
-        "reset_password"
+        "reset_password",
+        {
+          username: target.username,
+          password_changed: true,
+        }
       );
 
       return respond({
-        success: true
+        success: true,
       });
     }
 
+    // ==========================================
     // CHANGE PLAYER USERNAME
+    // ==========================================
 
     if (action === "change_username") {
       const playerId = body.player_id;
       const newUsername = body.username;
 
       if (!validUuid(playerId)) {
-        return respond({
-          error: "Invalid player ID"
-        }, 400);
+        return respond(
+          { error: "Invalid player ID" },
+          400
+        );
       }
 
       if (!validUsername(newUsername)) {
-        return respond({
-          error:
-            "Username must be 3-24 characters using letters, numbers, or underscores"
-        }, 400);
+        return respond(
+          {
+            error:
+              "Username must be 3-24 characters using letters, numbers, or underscores",
+          },
+          400
+        );
       }
 
       const { data: target, error: targetError } =
@@ -541,27 +549,29 @@ Deno.serve(async (request: Request) => {
           .single();
 
       if (targetError || !target) {
-        return respond({
-          error: "Player not found"
-        }, 404);
+        return respond(
+          { error: "Player not found" },
+          404
+        );
       }
 
       if (target.is_admin) {
-        return respond({
-          error:
-            "Administrator usernames cannot be changed here"
-        }, 403);
+        return respond(
+          {
+            error:
+              "Administrator usernames cannot be changed here",
+          },
+          403
+        );
       }
 
       if (target.username === newUsername) {
         return respond({
           success: true,
           username: newUsername,
-          unchanged: true
+          unchanged: true,
         });
       }
-
-      // Prevent duplicate usernames regardless of case.
 
       const { data: existing, error: lookupError } =
         await adminDb
@@ -571,14 +581,13 @@ Deno.serve(async (request: Request) => {
           .neq("id", playerId)
           .limit(1);
 
-      if (lookupError) {
-        throw lookupError;
-      }
+      if (lookupError) throw lookupError;
 
       if (existing && existing.length > 0) {
-        return respond({
-          error: "Username already exists"
-        }, 409);
+        return respond(
+          { error: "Username already exists" },
+          409
+        );
       }
 
       const { data: updated, error: updateError } =
@@ -592,9 +601,10 @@ Deno.serve(async (request: Request) => {
 
       if (updateError) {
         if (updateError.code === "23505") {
-          return respond({
-            error: "Username already exists"
-          }, 409);
+          return respond(
+            { error: "Username already exists" },
+            409
+          );
         }
 
         throw updateError;
@@ -606,17 +616,19 @@ Deno.serve(async (request: Request) => {
         "change_username",
         {
           previous_username: target.username,
-          new_username: updated.username
+          new_username: updated.username,
         }
       );
 
       return respond({
         success: true,
-        username: updated.username
+        username: updated.username,
       });
     }
 
-    // VIEW ADMINISTRATOR ACTION HISTORY
+    // ==========================================
+    // ADMINISTRATOR ACTION HISTORY
+    // ==========================================
 
     if (action === "admin_history") {
       const playerId = body.player_id;
@@ -627,9 +639,10 @@ Deno.serve(async (request: Request) => {
         playerId !== null &&
         !validUuid(playerId)
       ) {
-        return respond({
-          error: "Invalid player ID"
-        }, 400);
+        return respond(
+          { error: "Invalid player ID" },
+          400
+        );
       }
 
       if (
@@ -638,9 +651,12 @@ Deno.serve(async (request: Request) => {
         requestedLimit < 1 ||
         requestedLimit > 500
       ) {
-        return respond({
-          error: "History limit must be between 1 and 500"
-        }, 400);
+        return respond(
+          {
+            error: "History limit must be between 1 and 500",
+          },
+          400
+        );
       }
 
       let query = adminDb
@@ -648,9 +664,7 @@ Deno.serve(async (request: Request) => {
         .select(
           "id, admin_id, target_player_id, action, details, created_at"
         )
-        .order("created_at", {
-          ascending: false
-        })
+        .order("created_at", { ascending: false })
         .limit(requestedLimit);
 
       if (typeof playerId === "string") {
@@ -662,21 +676,22 @@ Deno.serve(async (request: Request) => {
 
       const { data, error } = await query;
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       return respond({
         success: true,
-        history: data ?? []
+        history: data ?? [],
       });
     }
 
-    // UNKNOWN ADMINISTRATOR ACTION
+    // ==========================================
+    // UNKNOWN ACTION
+    // ==========================================
 
-    return respond({
-      error: "Unknown administrator action"
-    }, 400);
+    return respond(
+      { error: "Unknown administrator action" },
+      400
+    );
 
   } catch (error) {
     return errorResponse(error);
