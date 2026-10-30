@@ -160,7 +160,8 @@ function parseSave(raw: string | null): SaveData {
       return defaults;
     }
 
-    const record = data as Record<string, unknown>;
+    const record =
+      data as Record<string, unknown>;
 
     const rawUpgrades =
       record.upgrades &&
@@ -195,7 +196,10 @@ function parseSave(raw: string | null): SaveData {
         1,
         number(record.campaignLevel, 1)
       ),
-      bestEndless: number(record.bestEndless, 0),
+      bestEndless: number(
+        record.bestEndless,
+        0
+      ),
       upgrades
     };
   } catch {
@@ -207,17 +211,20 @@ let save = defaultSave();
 
 let activeSaveOwner: string | null = null;
 
+let walletReady = false;
+let walletLoading = false;
+let walletError = "";
+let walletRequestVersion = 0;
+
 let adminSection: AdminSection = "home";
 
 let adminPlayers: AdminPlayer[] = [];
 
 let adminPlayersLoading = false;
-
 let adminPlayersError = "";
-
 let adminPlayersLoaded = false;
-
 let adminPlayersPage = 0;
+
 let coinSelectedPlayerId: string | null = null;
 let coinGrantPending = false;
 let coinGrantMessage = "";
@@ -234,6 +241,213 @@ function isAdministrator(): boolean {
     !profile.is_disabled &&
     activeSaveOwner === profile.id
   );
+}
+
+function playerSaveKey(
+  playerId: string
+): string {
+  return `${ACCOUNT_SAVE_PREFIX}${playerId}`;
+}
+
+function invalidateWallet(): void {
+  walletRequestVersion++;
+  walletReady = false;
+  walletLoading = false;
+  walletError = "";
+}
+
+async function loadPlayerWallet(): Promise<void> {
+  const profile = currentPlayer();
+
+  if (
+    !profile ||
+    profile.is_disabled ||
+    activeSaveOwner !== profile.id
+  ) {
+    return;
+  }
+
+  const ownerId = profile.id;
+  const requestVersion = ++walletRequestVersion;
+
+  walletReady = false;
+  walletLoading = true;
+  walletError = "";
+
+  try {
+    const {
+      data,
+      error
+    } = await supabase
+      .from("player_profiles")
+      .select("coins")
+      .eq("id", ownerId)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    if (
+      !data ||
+      !Number.isSafeInteger(data.coins) ||
+      data.coins < 0
+    ) {
+      throw new Error(
+        "Invalid wallet balance returned."
+      );
+    }
+
+    if (
+      walletRequestVersion !== requestVersion ||
+      activeSaveOwner !== ownerId ||
+      currentPlayer()?.id !== ownerId
+    ) {
+      return;
+    }
+
+    save.coins = data.coins;
+    walletReady = true;
+    walletError = "";
+
+    // Local save remains a gameplay cache.
+    // Supabase is authoritative for coins.
+    persist();
+  } catch (error) {
+    if (
+      walletRequestVersion !== requestVersion ||
+      activeSaveOwner !== ownerId
+    ) {
+      return;
+    }
+
+    walletReady = false;
+
+    walletError =
+      error instanceof Error
+        ? error.message
+        : "Unable to synchronize wallet.";
+
+    console.error(
+      "Wallet synchronization failed:",
+      error
+    );
+  } finally {
+    if (
+      walletRequestVersion === requestVersion &&
+      activeSaveOwner === ownerId
+    ) {
+      walletLoading = false;
+    }
+  }
+}
+
+function activatePlayerSave(profile: {
+  id: string;
+  is_admin: boolean;
+}): void {
+  if (activeSaveOwner === profile.id) {
+    return;
+  }
+
+  invalidateWallet();
+
+  activeSaveOwner = null;
+  save = defaultSave();
+
+  try {
+    const key = playerSaveKey(profile.id);
+    const existing = localStorage.getItem(key);
+
+    if (existing !== null) {
+      save = parseSave(existing);
+    } else {
+      const legacy =
+        localStorage.getItem(SAVE_KEY);
+
+      if (
+        legacy !== null &&
+        localStorage.getItem(
+          LEGACY_BACKUP_KEY
+        ) === null
+      ) {
+        localStorage.setItem(
+          LEGACY_BACKUP_KEY,
+          legacy
+        );
+      }
+
+      const legacyOwner =
+        localStorage.getItem(
+          LEGACY_OWNER_KEY
+        );
+
+      if (
+        profile.is_admin &&
+        legacy !== null &&
+        (
+          legacyOwner === null ||
+          legacyOwner === profile.id
+        )
+      ) {
+        if (legacyOwner === null) {
+          localStorage.setItem(
+            LEGACY_OWNER_KEY,
+            profile.id
+          );
+        }
+
+        save = parseSave(legacy);
+      }
+
+      localStorage.setItem(
+        key,
+        JSON.stringify(save)
+      );
+    }
+
+    activeSaveOwner = profile.id;
+
+    // Never display cached coins as verified.
+    save.coins = 0;
+
+    void loadPlayerWallet();
+  } catch (error) {
+    activeSaveOwner = null;
+    save = defaultSave();
+
+    console.error(
+      "Unable to initialize account save:",
+      error
+    );
+
+    showError(
+      "Account save could not be initialized."
+    );
+  }
+}
+
+function persist(): void {
+  const profile = currentPlayer();
+
+  if (
+    !profile ||
+    activeSaveOwner !== profile.id
+  ) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      playerSaveKey(profile.id),
+      JSON.stringify(save)
+    );
+  } catch (error) {
+    console.warn(
+      "Unable to save player progress:",
+      error
+    );
+  }
 }
 
 async function loadAdminPlayers(): Promise<void> {
@@ -262,7 +476,7 @@ async function loadAdminPlayers(): Promise<void> {
 
     if (!token) {
       throw new Error(
-        "Administrator session expired. Please log in again."
+        "Administrator session expired."
       );
     }
 
@@ -290,7 +504,7 @@ async function loadAdminPlayers(): Promise<void> {
       !Array.isArray(data.players)
     ) {
       throw new Error(
-        "Invalid player list response from Supabase."
+        "Invalid player list response."
       );
     }
 
@@ -302,7 +516,6 @@ async function loadAdminPlayers(): Promise<void> {
     }
 
     adminPlayers = data.players as AdminPlayer[];
-
     adminPlayersPage = 0;
     adminPlayersLoaded = true;
   } catch (error) {
@@ -313,15 +526,10 @@ async function loadAdminPlayers(): Promise<void> {
       return;
     }
 
-    console.error(
-      "Unable to load administrator player list:",
-      error
-    );
-
     adminPlayersError =
       error instanceof Error
         ? error.message
-        : "Unable to load player accounts.";
+        : "Unable to load accounts.";
 
     adminPlayers = [];
   } finally {
@@ -340,15 +548,12 @@ function openAdminDashboard(): void {
   }
 
   resetJoystick();
-
   adminSection = "home";
-
   gameScreen = "admin";
 }
 
 function closeAdminDashboard(): void {
   adminSection = "home";
-
   gameScreen = "menu";
 }
 
@@ -361,17 +566,16 @@ function openAdminSection(
 
   adminSection = section;
 
-  if (section === "coins") {
+  if (
+    section === "coins" ||
+    section === "players"
+  ) {
+    adminPlayers = [];
+    adminPlayersPage = 0;
     coinSelectedPlayerId = null;
     coinGrantMessage = "";
     coinGrantError = "";
-    adminPlayersPage = 0;
-    void loadAdminPlayers();
-  }
 
-  if (section === "players") {
-    adminPlayers = [];
-    adminPlayersPage = 0;
     void loadAdminPlayers();
   }
 }
@@ -388,117 +592,10 @@ function clearAdminPlayerData(): void {
   coinGrantError = "";
 }
 
-function playerSaveKey(
-  playerId: string
-): string {
-  return `${ACCOUNT_SAVE_PREFIX}${playerId}`;
-}
-
-function activatePlayerSave(profile: {
-  id: string;
-  is_admin: boolean;
-}): void {
-  if (activeSaveOwner === profile.id) {
-    return;
-  }
-
-  activeSaveOwner = null;
-  save = defaultSave();
-
-  try {
-    const key = playerSaveKey(profile.id);
-
-    const existing =
-      localStorage.getItem(key);
-
-    if (existing !== null) {
-      save = parseSave(existing);
-      activeSaveOwner = profile.id;
-      return;
-    }
-
-    const legacy =
-      localStorage.getItem(SAVE_KEY);
-
-    if (
-      legacy !== null &&
-      localStorage.getItem(
-        LEGACY_BACKUP_KEY
-      ) === null
-    ) {
-      localStorage.setItem(
-        LEGACY_BACKUP_KEY,
-        legacy
-      );
-    }
-
-    const legacyOwner =
-      localStorage.getItem(
-        LEGACY_OWNER_KEY
-      );
-
-    if (
-      profile.is_admin &&
-      legacy !== null &&
-      (
-        legacyOwner === null ||
-        legacyOwner === profile.id
-      )
-    ) {
-      if (legacyOwner === null) {
-        localStorage.setItem(
-          LEGACY_OWNER_KEY,
-          profile.id
-        );
-      }
-
-      save = parseSave(legacy);
-    }
-
-    localStorage.setItem(
-      key,
-      JSON.stringify(save)
-    );
-
-    activeSaveOwner = profile.id;
-  } catch (error) {
-    activeSaveOwner = null;
-    save = defaultSave();
-
-    console.error(
-      "Unable to initialize account save:",
-      error
-    );
-
-    showError(
-      "Account save could not be initialized. Storage may be full or disabled."
-    );
-  }
-}
-
-function persist(): void {
-  const profile = currentPlayer();
-
-  if (
-    !profile ||
-    activeSaveOwner !== profile.id
-  ) {
-    return;
-  }
-
-  try {
-    localStorage.setItem(
-      playerSaveKey(profile.id),
-      JSON.stringify(save)
-    );
-  } catch (error) {
-    console.warn(
-      "Unable to save player progress:",
-      error
-    );
-  }
-}
-/// STOP TRYING TO BE NOSEY ;)
+// PHASE 1 SECURITY:
+// Gameplay coins and shop spending will remain
+// disabled until secure server-side transactions
+// are implemented in the following phase.
 
 const canvas = document.createElement("canvas");
 
@@ -637,23 +734,22 @@ function buyUpgrade(key: UpgradeKey): void {
     return;
   }
 
-  const item = upgradeInfo.find(
-    upgrade => upgrade.key === key
-  )!;
-
-  const price = upgradePrice(key);
-
-  if (
-    save.upgrades[key] >= item.max ||
-    save.coins < price
-  ) {
+  if (!walletReady) {
+    showError(
+      "Wallet is not synchronized. Please wait."
+    );
     return;
   }
 
-  save.coins -= price;
-  save.upgrades[key]++;
+  // Secure purchase transactions are not
+  // implemented yet. Never deduct coins
+  // from the local cache.
+  showError(
+    "Upgrade purchases are temporarily disabled " +
+    "while secure wallet transactions are being added."
+  );
 
-  persist();
+  void key;
 }
 
 function resize(): void {
@@ -890,6 +986,13 @@ function startGame(mode: GameMode): void {
     return;
   }
 
+  if (!walletReady) {
+    showError(
+      "Please wait for your wallet to synchronize."
+    );
+    return;
+  }
+
   gameMode = mode;
   gameScreen = "playing";
 
@@ -940,14 +1043,17 @@ function bankRunCoins(): void {
 
   if (
     !profile ||
-    activeSaveOwner !== profile.id
+    activeSaveOwner !== profile.id ||
+    !walletReady
   ) {
     return;
   }
 
-  save.coins += runCoins;
-
-  persist();
+  // PHASE 1:
+  // Run rewards are calculated for display,
+  // but cannot modify the Supabase wallet.
+  // Server-side reward verification is required
+  // before banking is enabled.
 }
 
 function finishCampaign(): void {
@@ -1033,6 +1139,7 @@ function update(dt: number): void {
   if (
     !profile ||
     activeSaveOwner !== profile.id ||
+    !walletReady ||
     gameScreen !== "playing"
   ) {
     return;
@@ -1331,7 +1438,6 @@ function update(dt: number): void {
     finishCampaign();
   }
 }
-/// I KNOW WHERE YOU ARE ;)
 
 function drawText(
   value: string,
@@ -1624,19 +1730,47 @@ function drawPanel(title: string): void {
 function drawMenu(): void {
   drawPanel("APEX ZOMBIE SURVIVAL");
 
+  const profile = currentPlayer();
+  const admin = isAdministrator();
+
+  let walletText = "WALLET: NOT AVAILABLE";
+  let walletColor = "#ff9999";
+
+  if (walletLoading) {
+    walletText = "WALLET: SYNCHRONIZING...";
+    walletColor = "#e8c66d";
+  } else if (walletReady) {
+    walletText =
+      `WALLET: ${save.coins.toLocaleString()} COINS`;
+    walletColor = "#8ee29a";
+  } else if (walletError) {
+    walletText = "WALLET: SYNC FAILED";
+  }
+
   drawText(
-    `Wallet: ${save.coins} coins`,
+    walletText,
     width / 2,
     110,
-    17,
-    "#ffffff",
+    16,
+    walletColor,
     "center"
   );
+
+  if (walletError) {
+    drawText(
+      walletError.slice(0, 48),
+      width / 2,
+      130,
+      11,
+      "#ff9999",
+      "center"
+    );
+  }
 
   drawText(
     `Campaign Level: ${save.campaignLevel}`,
     width / 2,
-    145,
+    155,
     15,
     "#a5c9a5",
     "center"
@@ -1645,17 +1779,14 @@ function drawMenu(): void {
   drawText(
     `Best Endless Kills: ${save.bestEndless}`,
     width / 2,
-    172,
+    180,
     15,
     "#a5c9a5",
     "center"
   );
 
-  const profile = currentPlayer();
-  const admin = isAdministrator();
-
   const startY = Math.max(
-    190,
+    205,
     height / 2 - (admin ? 95 : 65)
   );
 
@@ -1867,7 +1998,7 @@ function drawAdminPlayerList(): void {
     );
 
     drawText(
-      `Coins: ${account.coins ?? 0}`,
+      `Coins: ${(account.coins ?? 0).toLocaleString()}`,
       26,
       y + 39,
       12,
@@ -1911,13 +2042,11 @@ function drawAdminPlayerList(): void {
       );
     }
   });
-/// PICKED THE WRONG DEVELOPER;)
 
   const pageY = Math.min(
     height - 195,
-    (height < 740 ? 155 : 170) +
-      ADMIN_PLAYERS_PER_PAGE *
-        (height < 740 ? 70 : 82) + 8
+    startY +
+      ADMIN_PLAYERS_PER_PAGE * rowHeight + 8
   );
 
   drawText(
@@ -2060,8 +2189,10 @@ async function grantAdminCoins(
     coinGrantMessage =
       `Granted ${amount.toLocaleString()} coins to ${account.username}.`;
 
-    // Keep local gameplay saves untouched.
-    // Secure wallet synchronization is a later phase.
+    // Refresh this admin's own wallet if applicable.
+    if (account.id === owner) {
+      void loadPlayerWallet();
+    }
   } catch (error) {
     if (
       isAdministrator() &&
@@ -2175,7 +2306,7 @@ function drawAdminCoins(): void {
         )
         .forEach((account, index) => {
           addButton(
-            `${account.username.slice(0, 19)} (${account.coins} coins)`,
+            `${account.username.slice(0, 19)} (${account.coins.toLocaleString()} coins)`,
             155 + index * 57,
             () => {
               coinSelectedPlayerId = account.id;
@@ -2468,17 +2599,28 @@ function drawShop(): void {
   drawPanel("UPGRADE SHOP");
 
   drawText(
-    `AVAILABLE COINS: ${save.coins}`,
+    walletReady
+      ? `AVAILABLE COINS: ${save.coins.toLocaleString()}`
+      : "WALLET: NOT SYNCHRONIZED",
     width / 2,
     105,
     16,
-    "#e8c66d",
+    walletReady ? "#e8c66d" : "#ff9999",
+    "center"
+  );
+
+  drawText(
+    "PURCHASES TEMPORARILY DISABLED",
+    width / 2,
+    130,
+    11,
+    "#ff9999",
     "center"
   );
 
   const startY = Math.max(
-    145,
-    height / 2 - 160
+    155,
+    height / 2 - 145
   );
 
   upgradeInfo.forEach((item, index) => {
@@ -2549,7 +2691,7 @@ function drawGame(): void {
   );
 
   drawText(
-    `COINS: ${runCoins}`,
+    `RUN COINS: ${runCoins}`,
     20,
     76,
     14,
@@ -2691,10 +2833,10 @@ function drawComplete(): void {
   );
 
   drawText(
-    `TOTAL RUN REWARD: ${runCoins}`,
+    `RUN REWARD (NOT BANKED): ${runCoins}`,
     width / 2,
     height / 2 - 50,
-    16,
+    14,
     "#e8c66d",
     "center"
   );
@@ -2747,16 +2889,18 @@ function drawGameOver(): void {
   );
 
   drawText(
-    `COINS EARNED: ${runCoins}`,
+    `RUN COINS (NOT BANKED): ${runCoins}`,
     width / 2,
     height / 2 - 65,
-    16,
+    14,
     "#e8c66d",
     "center"
   );
 
   drawText(
-    `WALLET BALANCE: ${save.coins}`,
+    walletReady
+      ? `WALLET BALANCE: ${save.coins.toLocaleString()}`
+      : "WALLET NOT SYNCHRONIZED",
     width / 2,
     height / 2 - 35,
     15,
@@ -2861,6 +3005,8 @@ function frame(timestamp: number): void {
 
 onProfileChange(profile => {
   if (!profile || profile.is_disabled) {
+    invalidateWallet();
+
     activeSaveOwner = null;
     save = defaultSave();
 
