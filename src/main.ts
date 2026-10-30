@@ -218,6 +218,10 @@ let adminPlayersError = "";
 let adminPlayersLoaded = false;
 
 let adminPlayersPage = 0;
+let coinSelectedPlayerId: string | null = null;
+let coinGrantPending = false;
+let coinGrantMessage = "";
+let coinGrantError = "";
 
 const ADMIN_PLAYERS_PER_PAGE = 4;
 
@@ -357,6 +361,14 @@ function openAdminSection(
 
   adminSection = section;
 
+  if (section === "coins") {
+    coinSelectedPlayerId = null;
+    coinGrantMessage = "";
+    coinGrantError = "";
+    adminPlayersPage = 0;
+    void loadAdminPlayers();
+  }
+
   if (section === "players") {
     adminPlayers = [];
     adminPlayersPage = 0;
@@ -370,6 +382,10 @@ function clearAdminPlayerData(): void {
   adminPlayersError = "";
   adminPlayersLoaded = false;
   adminPlayersPage = 0;
+  coinSelectedPlayerId = null;
+  coinGrantPending = false;
+  coinGrantMessage = "";
+  coinGrantError = "";
 }
 
 function playerSaveKey(
@@ -482,7 +498,7 @@ function persist(): void {
     );
   }
 }
-/// STOP SNOOPING
+/// STOP TRYING TO BE NOSEY ;)
 
 const canvas = document.createElement("canvas");
 
@@ -1315,11 +1331,7 @@ function update(dt: number): void {
     finishCampaign();
   }
 }
-/// I ALREADY KNOW WHERE YOU ARE :)
-
- // ==========================================
- // APEX ZOMBIE SURVIVAL
- // ==========================================
+/// I KNOW WHERE YOU ARE ;)
 
 function drawText(
   value: string,
@@ -1899,7 +1911,7 @@ function drawAdminPlayerList(): void {
       );
     }
   });
-/// TWAS A BAD IDEA :(
+/// PICKED THE WRONG DEVELOPER;)
 
   const pageY = Math.min(
     height - 195,
@@ -1938,6 +1950,380 @@ function drawAdminPlayerList(): void {
   }
 }
 
+async function grantAdminCoins(
+  account: AdminPlayer,
+  amount: number
+): Promise<void> {
+  if (!isAdministrator() || coinGrantPending) {
+    return;
+  }
+
+  if (
+    !Number.isSafeInteger(amount) ||
+    amount < 1 ||
+    amount > 1000000
+  ) {
+    coinGrantError =
+      "Enter a whole number from 1 to 1,000,000.";
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Add ${amount.toLocaleString()} coins to ${account.username}?`
+    )
+  ) {
+    return;
+  }
+
+  const owner = activeSaveOwner;
+
+  coinGrantPending = true;
+  coinGrantMessage = "";
+  coinGrantError = "";
+
+  try {
+    const {
+      data: sessionData,
+      error: sessionError
+    } = await supabase.auth.getSession();
+
+    if (sessionError) {
+      throw sessionError;
+    }
+
+    const token =
+      sessionData.session?.access_token;
+
+    if (!token) {
+      throw new Error(
+        "Administrator session expired. Log in again."
+      );
+    }
+
+    const {
+      data,
+      error
+    } = await supabase.functions.invoke(
+      "apex-admin",
+      {
+        body: {
+          action: "add_coins",
+          player_id: account.id,
+          amount
+        },
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data?.success) {
+      throw new Error(
+        String(
+          data?.error ||
+          "Coin grant was not confirmed."
+        )
+      );
+    }
+
+    if (
+      !isAdministrator() ||
+      activeSaveOwner !== owner
+    ) {
+      return;
+    }
+
+    const balance = Number(data.new_balance);
+
+    if (
+      !Number.isSafeInteger(balance) ||
+      balance < 0
+    ) {
+      throw new Error(
+        "Grant completed, but the new balance was not readable. Refresh accounts."
+      );
+    }
+
+    const target = adminPlayers.find(
+      player => player.id === account.id
+    );
+
+    if (target) {
+      target.coins = balance;
+    }
+
+    coinGrantMessage =
+      `Granted ${amount.toLocaleString()} coins to ${account.username}.`;
+
+    // Keep local gameplay saves untouched.
+    // Secure wallet synchronization is a later phase.
+  } catch (error) {
+    if (
+      isAdministrator() &&
+      activeSaveOwner === owner
+    ) {
+      coinGrantError =
+        error instanceof Error
+          ? error.message
+          : "Coin grant failed.";
+    }
+  } finally {
+    coinGrantPending = false;
+  }
+}
+
+function promptAdminCoinGrant(
+  account: AdminPlayer,
+  preset?: number
+): void {
+  if (!isAdministrator() || coinGrantPending) {
+    return;
+  }
+
+  let amount = preset;
+
+  if (amount === undefined) {
+    const value = window.prompt(
+      `Coins to add to ${account.username} (1–1,000,000):`,
+      "1000"
+    );
+
+    if (value === null) {
+      return;
+    }
+
+    if (!/^\d+$/.test(value.trim())) {
+      coinGrantError =
+        "Enter a whole number from 1 to 1,000,000.";
+      return;
+    }
+
+    amount = Number(value.trim());
+  }
+
+  void grantAdminCoins(account, amount);
+}
+
+function drawAdminCoins(): void {
+  drawText(
+    "SELECT PLAYER / GRANT COINS",
+    width / 2,
+    110,
+    13,
+    "#a5c9a5",
+    "center"
+  );
+
+  if (adminPlayersLoading) {
+    drawText(
+      "Loading players...",
+      width / 2,
+      170,
+      15,
+      "#e8c66d",
+      "center"
+    );
+  } else if (adminPlayersError) {
+    drawText(
+      "Unable to load players",
+      width / 2,
+      170,
+      15,
+      "#ff7777",
+      "center"
+    );
+
+    addButton(
+      "RETRY",
+      195,
+      () => void loadAdminPlayers()
+    );
+  } else if (!adminPlayersLoaded) {
+    drawText(
+      "Refresh to load accounts",
+      width / 2,
+      170,
+      14,
+      "#ffffff",
+      "center"
+    );
+  } else {
+    const selected = adminPlayers.find(
+      player => player.id === coinSelectedPlayerId
+    );
+
+    if (!selected) {
+      const pages = Math.max(
+        1,
+        Math.ceil(adminPlayers.length / 4)
+      );
+
+      adminPlayersPage = Math.min(
+        adminPlayersPage,
+        pages - 1
+      );
+
+      adminPlayers
+        .slice(
+          adminPlayersPage * 4,
+          adminPlayersPage * 4 + 4
+        )
+        .forEach((account, index) => {
+          addButton(
+            `${account.username.slice(0, 19)} (${account.coins} coins)`,
+            155 + index * 57,
+            () => {
+              coinSelectedPlayerId = account.id;
+              coinGrantMessage = "";
+              coinGrantError = "";
+            }
+          );
+        });
+
+      drawText(
+        `PAGE ${adminPlayersPage + 1} / ${pages}`,
+        width / 2,
+        405,
+        12,
+        "#e8c66d",
+        "center"
+      );
+
+      if (adminPlayersPage > 0) {
+        addButton(
+          "PREVIOUS",
+          420,
+          () => {
+            adminPlayersPage--;
+          }
+        );
+      }
+
+      if (adminPlayersPage < pages - 1) {
+        addButton(
+          "NEXT",
+          475,
+          () => {
+            adminPlayersPage++;
+          }
+        );
+      }
+    } else {
+      drawText(
+        selected.username.slice(0, 26),
+        width / 2,
+        155,
+        19,
+        "#e8c66d",
+        "center"
+      );
+
+      drawText(
+        `SUPABASE BALANCE: ${selected.coins.toLocaleString()}`,
+        width / 2,
+        188,
+        14,
+        "#ffffff",
+        "center"
+      );
+
+      drawText(
+        coinGrantPending
+          ? "PROCESSING - DO NOT RETRY"
+          : "CHOOSE AMOUNT",
+        width / 2,
+        223,
+        12,
+        "#a5c9a5",
+        "center"
+      );
+
+      if (!coinGrantPending) {
+        addButton(
+          "+100 COINS",
+          242,
+          () => promptAdminCoinGrant(selected, 100)
+        );
+
+        addButton(
+          "+1,000 COINS",
+          295,
+          () => promptAdminCoinGrant(selected, 1000)
+        );
+
+        addButton(
+          "+10,000 COINS",
+          348,
+          () => promptAdminCoinGrant(selected, 10000)
+        );
+
+        addButton(
+          "CUSTOM AMOUNT",
+          401,
+          () => promptAdminCoinGrant(selected)
+        );
+
+        addButton(
+          "CHANGE PLAYER",
+          454,
+          () => {
+            coinSelectedPlayerId = null;
+            coinGrantMessage = "";
+            coinGrantError = "";
+          }
+        );
+      }
+    }
+  }
+
+  if (coinGrantMessage) {
+    drawText(
+      coinGrantMessage.slice(0, 44),
+      width / 2,
+      height - 213,
+      11,
+      "#8ee29a",
+      "center"
+    );
+  }
+
+  if (coinGrantError) {
+    drawText(
+      coinGrantError.slice(0, 44),
+      width / 2,
+      height - 213,
+      11,
+      "#ff7777",
+      "center"
+    );
+  }
+
+  addButton(
+    "REFRESH BALANCES",
+    height - 150,
+    () => {
+      if (!coinGrantPending) {
+        void loadAdminPlayers();
+      }
+    }
+  );
+
+  addButton(
+    "BACK TO ADMIN MENU",
+    height - 90,
+    () => {
+      if (!coinGrantPending) {
+        adminSection = "home";
+      }
+    }
+  );
+}
+
 function drawAdminDashboard(): void {
   if (!isAdministrator()) {
     gameScreen = "menu";
@@ -1966,11 +2352,26 @@ function drawAdminDashboard(): void {
       title: string;
       section: AdminSection;
     }[] = [
-      { title: "PLAYER ACCOUNTS", section: "players" },
-      { title: "COIN MANAGEMENT", section: "coins" },
-      { title: "LOCK / UNLOCK", section: "locks" },
-      { title: "ACCOUNT MANAGEMENT", section: "accounts" },
-      { title: "ADMIN ACTION HISTORY", section: "history" }
+      {
+        title: "PLAYER ACCOUNTS",
+        section: "players"
+      },
+      {
+        title: "COIN MANAGEMENT",
+        section: "coins"
+      },
+      {
+        title: "LOCK / UNLOCK",
+        section: "locks"
+      },
+      {
+        title: "ACCOUNT MANAGEMENT",
+        section: "accounts"
+      },
+      {
+        title: "ADMIN ACTION HISTORY",
+        section: "history"
+      }
     ];
 
     sections.forEach((item, index) => {
@@ -2018,6 +2419,11 @@ function drawAdminDashboard(): void {
       }
     );
 
+    return;
+  }
+
+  if (adminSection === "coins") {
+    drawAdminCoins();
     return;
   }
 
@@ -2077,13 +2483,12 @@ function drawShop(): void {
 
   upgradeInfo.forEach((item, index) => {
     const level = save.upgrades[item.key];
-
     const price = upgradePrice(item.key);
 
     const label =
       level >= item.max
-        ? `${item.name} — MAX LEVEL`
-        : `${item.name} LV ${level} — ${price} COINS`;
+        ? `${item.name} - MAX LEVEL`
+        : `${item.name} LV ${level} - ${price} COINS`;
 
     addButton(
       label,
@@ -2380,7 +2785,10 @@ function showError(error: unknown): void {
       ? error.message
       : String(error);
 
-  console.error("APEX Zombie Survival:", message);
+  console.error(
+    "APEX Zombie Survival:",
+    message
+  );
 
   window.alert(message);
 }
