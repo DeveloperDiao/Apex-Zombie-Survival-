@@ -7,6 +7,14 @@ import {
   startAccountLockMonitor
 } from "./auth-ui";
 
+import { supabase } from "./supabase";
+
+// ==========================================
+// APEX ZOMBIE SURVIVAL
+// ==========================================
+
+// GAME ENTITY TYPES
+
 type Zombie = {
   x: number;
   y: number;
@@ -69,6 +77,29 @@ type AdminSection =
   | "accounts"
   | "history";
 
+// ==========================================
+// SUPABASE PLAYER ACCOUNT TYPES
+// ==========================================
+
+type AdminPlayer = {
+  id: string;
+  username: string;
+  coins: number;
+  is_admin: boolean;
+  is_disabled: boolean;
+  campaign_level?: number | null;
+};
+
+type AdminPlayersResponse = {
+  players?: AdminPlayer[];
+  error?: string;
+  message?: string;
+};
+
+// ==========================================
+// EXISTING SAVE KEYS - DO NOT CHANGE
+// ==========================================
+
 const SAVE_KEY = "apex-zombie-survival-v2";
 
 const ACCOUNT_SAVE_PREFIX =
@@ -80,20 +111,51 @@ const LEGACY_BACKUP_KEY =
 const LEGACY_OWNER_KEY =
   "apex-zombie-survival-v2-owner";
 
+// ==========================================
+// UPGRADE CONFIGURATION
+// ==========================================
+
 const upgradeInfo: {
   key: UpgradeKey;
   name: string;
   price: number;
   max: number;
 }[] = [
-  { key: "health", name: "Health +20", price: 100, max: 10 },
-  { key: "armor", name: "Armor +1", price: 150, max: 8 },
-  { key: "stamina", name: "Speed +10%", price: 125, max: 8 },
-  { key: "damage", name: "Damage +1", price: 200, max: 10 },
-  { key: "fireRate", name: "Fire Rate", price: 250, max: 8 }
+  {
+    key: "health",
+    name: "Health +20",
+    price: 100,
+    max: 10
+  },
+  {
+    key: "armor",
+    name: "Armor +1",
+    price: 150,
+    max: 8
+  },
+  {
+    key: "stamina",
+    name: "Speed +10%",
+    price: 125,
+    max: 8
+  },
+  {
+    key: "damage",
+    name: "Damage +1",
+    price: 200,
+    max: 10
+  },
+  {
+    key: "fireRate",
+    name: "Fire Rate",
+    price: 250,
+    max: 8
+  }
 ];
 
-// DEFAULT PLAYER PROGRESS
+// ==========================================
+// DEFAULT PLAYER SAVE
+// ==========================================
 
 function defaultSave(): SaveData {
   return {
@@ -110,21 +172,29 @@ function defaultSave(): SaveData {
   };
 }
 
-// VALIDATE STORED PLAYER PROGRESS
+// ==========================================
+// VALIDATE STORED SAVE DATA
+// ==========================================
 
 function parseSave(raw: string | null): SaveData {
   const defaults = defaultSave();
 
-  if (!raw) return defaults;
+  if (!raw) {
+    return defaults;
+  }
 
   try {
     const data: unknown = JSON.parse(raw);
 
-    if (!data || typeof data !== "object") {
+    if (
+      !data ||
+      typeof data !== "object"
+    ) {
       return defaults;
     }
 
-    const record = data as Record<string, unknown>;
+    const record =
+      data as Record<string, unknown>;
 
     const rawUpgrades =
       record.upgrades &&
@@ -135,14 +205,19 @@ function parseSave(raw: string | null): SaveData {
     const number = (
       value: unknown,
       fallback: number
-    ): number =>
-      typeof value === "number" &&
-      Number.isFinite(value) &&
-      value >= 0
+    ): number => {
+      return (
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        value >= 0
+      )
         ? Math.floor(value)
         : fallback;
+    };
 
-    const upgrades = { ...defaults.upgrades };
+    const upgrades = {
+      ...defaults.upgrades
+    };
 
     for (const item of upgradeInfo) {
       upgrades[item.key] = Math.min(
@@ -157,7 +232,10 @@ function parseSave(raw: string | null): SaveData {
         1,
         number(record.campaignLevel, 1)
       ),
-      bestEndless: number(record.bestEndless, 0),
+      bestEndless: number(
+        record.bestEndless,
+        0
+      ),
       upgrades
     };
   } catch {
@@ -165,14 +243,37 @@ function parseSave(raw: string | null): SaveData {
   }
 }
 
-// ACTIVE ACCOUNT DATA
+// ==========================================
+// ACTIVE PLAYER SAVE
+// ==========================================
 
 let save = defaultSave();
+
 let activeSaveOwner: string | null = null;
 
+// ==========================================
 // ADMINISTRATOR DASHBOARD STATE
+// ==========================================
 
 let adminSection: AdminSection = "home";
+
+let adminPlayers: AdminPlayer[] = [];
+
+let adminPlayersLoading = false;
+
+let adminPlayersError = "";
+
+let adminPlayersLoaded = false;
+
+let adminPlayersPage = 0;
+
+const ADMIN_PLAYERS_PER_PAGE = 5;
+
+let adminRequestVersion = 0;
+
+// ==========================================
+// ADMINISTRATOR AUTHORIZATION CHECK
+// ==========================================
 
 function isAdministrator(): boolean {
   const profile = currentPlayer();
@@ -185,20 +286,171 @@ function isAdministrator(): boolean {
   );
 }
 
+// ==========================================
+// ADMIN PLAYER DATA RESET
+// ==========================================
+
+function resetAdminPlayerData(): void {
+  adminRequestVersion++;
+
+  adminPlayers = [];
+  adminPlayersLoading = false;
+  adminPlayersError = "";
+  adminPlayersLoaded = false;
+  adminPlayersPage = 0;
+}
+
+// ==========================================
+// REQUEST PLAYER ACCOUNTS
+// ==========================================
+
+async function loadAdminPlayers(): Promise<void> {
+  if (!isAdministrator()) {
+    resetAdminPlayerData();
+    return;
+  }
+
+  const requestVersion = ++adminRequestVersion;
+  const adminId = currentPlayer()?.id;
+
+  adminPlayersLoading = true;
+  adminPlayersError = "";
+  adminPlayersLoaded = false;
+
+  try {
+    const {
+      data: sessionData,
+      error: sessionError
+    } = await supabase.auth.getSession();
+
+    if (sessionError) {
+      throw sessionError;
+    }
+
+    const accessToken =
+      sessionData.session?.access_token;
+
+    if (!accessToken) {
+      throw new Error(
+        "Administrator session expired."
+      );
+    }
+
+    const {
+      data,
+      error
+    } = await supabase.functions.invoke(
+      "apex-admin",
+      {
+        body: {
+          action: "list_players"
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+
+    if (error) {
+      throw error;
+    }
+
+    const response =
+      data as AdminPlayersResponse | null;
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    if (
+      !response ||
+      !Array.isArray(response.players)
+    ) {
+      throw new Error(
+        "Unexpected player list response."
+      );
+    }
+
+    if (
+      requestVersion !== adminRequestVersion ||
+      !isAdministrator() ||
+      currentPlayer()?.id !== adminId
+    ) {
+      return;
+    }
+
+    adminPlayers = response.players;
+    adminPlayersPage = 0;
+    adminPlayersLoaded = true;
+  } catch (error) {
+    if (
+      requestVersion !== adminRequestVersion ||
+      !isAdministrator() ||
+      currentPlayer()?.id !== adminId
+    ) {
+      return;
+    }
+
+    adminPlayersError =
+      error instanceof Error
+        ? error.message
+        : "Unable to load player accounts.";
+
+    adminPlayers = [];
+    adminPlayersLoaded = false;
+  } finally {
+    if (
+      requestVersion === adminRequestVersion
+    ) {
+      adminPlayersLoading = false;
+    }
+  }
+}
+
+// ==========================================
+// ADMIN DASHBOARD NAVIGATION
+// ==========================================
+
 function openAdminDashboard(): void {
   if (!isAdministrator()) {
     return;
   }
 
   resetJoystick();
+  resetAdminPlayerData();
+
   adminSection = "home";
   gameScreen = "admin";
 }
 
+function openAdminSection(
+  section: AdminSection
+): void {
+  if (!isAdministrator()) {
+    return;
+  }
+
+  adminSection = section;
+
+  if (section === "players") {
+    void loadAdminPlayers();
+  }
+}
+
 function closeAdminDashboard(): void {
+  resetAdminPlayerData();
+
   adminSection = "home";
   gameScreen = "menu";
 }
+
+// ==========================================
+// STOP SPYING
+// ==========================================
+
+// ==========================================
+// APEX ZOMBIE SURVIVAL
+// ==========================================
 
 // ACCOUNT-SPECIFIC STORAGE
 
@@ -210,7 +462,9 @@ function activatePlayerSave(profile: {
   id: string;
   is_admin: boolean;
 }): void {
-  if (activeSaveOwner === profile.id) return;
+  if (activeSaveOwner === profile.id) {
+    return;
+  }
 
   activeSaveOwner = null;
   save = defaultSave();
@@ -279,7 +533,9 @@ function activatePlayerSave(profile: {
   }
 }
 
-// SAVE PROGRESS
+// ==========================================
+// SAVE PLAYER PROGRESS
+// ==========================================
 
 function persist(): void {
   const profile = currentPlayer();
@@ -297,11 +553,16 @@ function persist(): void {
       JSON.stringify(save)
     );
   } catch (error) {
-    console.warn("Unable to save", error);
+    console.warn(
+      "Unable to save player progress",
+      error
+    );
   }
 }
 
+// ==========================================
 // CANVAS SETUP
+// ==========================================
 
 const canvas = document.createElement("canvas");
 const context = canvas.getContext("2d");
@@ -327,7 +588,9 @@ canvas.style.cssText =
 
 document.body.appendChild(canvas);
 
+// ==========================================
 // REMOVE OLD LOADING ELEMENTS
+// ==========================================
 
 for (const selector of [
   "#loading",
@@ -353,7 +616,9 @@ document.querySelectorAll(
   }
 });
 
+// ==========================================
 // GAME VARIABLES
+// ==========================================
 
 let width = 0;
 let height = 0;
@@ -407,7 +672,9 @@ const joystick = {
 
 const JOYSTICK_RADIUS = 48;
 
+// ==========================================
 // UPGRADE ATTRIBUTES
+// ==========================================
 
 const maxHealth = () =>
   100 + save.upgrades.health * 20;
@@ -421,7 +688,10 @@ const bulletDamage = () =>
 const fireDelay = () =>
   Math.max(
     0.1,
-    0.35 * Math.pow(0.9, save.upgrades.fireRate)
+    0.35 * Math.pow(
+      0.9,
+      save.upgrades.fireRate
+    )
   );
 
 function upgradePrice(key: UpgradeKey): number {
@@ -451,8 +721,13 @@ function buyUpgrade(key: UpgradeKey): void {
 
   const price = upgradePrice(key);
 
-  if (save.upgrades[key] >= item.max) return;
-  if (save.coins < price) return;
+  if (save.upgrades[key] >= item.max) {
+    return;
+  }
+
+  if (save.coins < price) {
+    return;
+  }
 
   save.coins -= price;
   save.upgrades[key]++;
@@ -460,7 +735,9 @@ function buyUpgrade(key: UpgradeKey): void {
   persist();
 }
 
+// ==========================================
 // SCREEN RESIZING
+// ==========================================
 
 function resize(): void {
   const oldWidth = width;
@@ -512,7 +789,9 @@ function resize(): void {
 window.addEventListener("resize", resize);
 resize();
 
+// ==========================================
 // JOYSTICK
+// ==========================================
 
 const joystickHome = () => ({
   x: Math.min(83, width * 0.23),
@@ -555,7 +834,9 @@ function updateJoystick(
       : dy * factor / JOYSTICK_RADIUS;
 }
 
+// ==========================================
 // PAUSE SYSTEM
+// ==========================================
 
 function pauseGame(): void {
   gameScreen = "paused";
@@ -589,14 +870,19 @@ function pauseButtonBounds() {
   };
 }
 
+// ==========================================
 // KEYBOARD CONTROLS
+// ==========================================
 
 window.addEventListener("keydown", event => {
   const key = event.key.toLowerCase();
 
   keys.add(key);
 
-  if (key === "escape" || key === "p") {
+  if (
+    key === "escape" ||
+    key === "p"
+  ) {
     if (gameScreen === "playing") {
       pauseGame();
     } else if (gameScreen === "paused") {
@@ -620,9 +906,12 @@ window.addEventListener("blur", () => {
   }
 });
 
+// ==========================================
+// I ALREADY FOUND YOU :)
+// ==========================================
 
 // ==========================================
-// APEX ZOMBIE SURVIVAL
+// STOP TRYING TO HACK ME :(
 // ==========================================
 
 // TOUCH CONTROLS
@@ -661,9 +950,7 @@ canvas.addEventListener("pointerdown", event => {
         event.clientY
       );
 
-      canvas.setPointerCapture(
-        event.pointerId
-      );
+      canvas.setPointerCapture(event.pointerId);
     }
 
     return;
@@ -911,7 +1198,7 @@ function update(dt: number): void {
     return;
   }
 
-  // SURVIVAL WAVE BREAK
+  // ENDLESS WAVE BREAK
 
   if (waveBreak > 0) {
     waveBreak = Math.max(
@@ -930,9 +1217,7 @@ function update(dt: number): void {
 
   elapsed += dt;
 
-  // ========================================
   // ENDLESS SURVIVAL PROGRESSION
-  // ========================================
 
   if (gameMode === "endless") {
     waveTime += dt;
@@ -967,9 +1252,7 @@ function update(dt: number): void {
     }
   }
 
-  // ========================================
   // PLAYER MOVEMENT
-  // ========================================
 
   let dx = 0;
   let dy = 0;
@@ -1007,10 +1290,7 @@ function update(dt: number): void {
     dy = joystick.dy;
   }
 
-  const length = Math.hypot(
-    dx,
-    dy
-  );
+  const length = Math.hypot(dx, dy);
 
   if (length > 0) {
     const strength = Math.min(
@@ -1047,9 +1327,7 @@ function update(dt: number): void {
     )
   );
 
-  // ========================================
   // ZOMBIE SPAWNING TIMER
-  // ========================================
 
   spawnTimer -= dt;
 
@@ -1062,9 +1340,7 @@ function update(dt: number): void {
     );
   }
 
-  // ========================================
   // AUTOMATIC SHOOTING
-  // ========================================
 
   shootTimer -= dt;
 
@@ -1073,7 +1349,6 @@ function update(dt: number): void {
     zombies.length > 0
   ) {
     let nearest: Zombie | null = null;
-
     let bestDistance = Infinity;
 
     for (const zombie of zombies) {
@@ -1085,9 +1360,7 @@ function update(dt: number): void {
         (zombie.x - player.x) ** 2 +
         (zombie.y - player.y) ** 2;
 
-      if (
-        distance < bestDistance
-      ) {
+      if (distance < bestDistance) {
         bestDistance = distance;
         nearest = zombie;
       }
@@ -1132,9 +1405,7 @@ function update(dt: number): void {
     invulnerable - dt
   );
 
-  // ========================================
-  // ZOMBIE MOVEMENT AND DAMAGE
-  // ========================================
+  // ZOMBIE MOVEMENT AND PLAYER DAMAGE
 
   for (const zombie of zombies) {
     if (zombie.hp <= 0) {
@@ -1180,7 +1451,6 @@ function update(dt: number): void {
       );
 
       noDamage = false;
-
       invulnerable = 0.7;
 
       if (player.hp <= 0) {
@@ -1190,14 +1460,11 @@ function update(dt: number): void {
     }
   }
 
-  // ========================================
   // BULLET MOVEMENT AND COLLISIONS
-  // ========================================
 
   for (const bullet of bullets) {
     bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
-
     bullet.life -= dt;
 
     if (bullet.life <= 0) {
@@ -1219,7 +1486,6 @@ function update(dt: number): void {
         zombie.radius + 4
       ) {
         zombie.hp -= bullet.damage;
-
         bullet.life = 0;
 
         if (zombie.hp <= 0) {
@@ -1268,9 +1534,7 @@ function update(dt: number): void {
     }
   }
 
-  // ========================================
   // CAMPAIGN LEVEL COMPLETION
-  // ========================================
 
   if (
     gameMode === "campaign" &&
@@ -1281,7 +1545,7 @@ function update(dt: number): void {
 }
 
 // ==========================================
-// 
+// I GUESS YOURE STILL HERE xdxdxd
 // ==========================================
 
 // ==========================================
@@ -1722,11 +1986,227 @@ function drawMenu(): void {
 }
 
 // ==========================================
+// ADMINISTRATOR PLAYER LIST
+// ==========================================
+
+function drawAdminPlayerList(): void {
+  if (adminPlayersLoading) {
+    drawText(
+      "Loading player accounts...",
+      width / 2,
+      height / 2,
+      15,
+      "#e8c66d",
+      "center"
+    );
+    return;
+  }
+
+  if (adminPlayersError) {
+    drawText(
+      "Unable to load player accounts",
+      width / 2,
+      height / 2 - 50,
+      15,
+      "#ff7777",
+      "center"
+    );
+
+    drawText(
+      adminPlayersError.slice(0, 42),
+      width / 2,
+      height / 2 - 20,
+      11,
+      "#ffffff",
+      "center"
+    );
+
+    addButton(
+      "RETRY",
+      height / 2 + 20,
+      () => {
+        void loadAdminPlayers();
+      }
+    );
+
+    return;
+  }
+
+  if (!adminPlayersLoaded) {
+    drawText(
+      "Select REFRESH to load accounts.",
+      width / 2,
+      height / 2,
+      13,
+      "#ffffff",
+      "center"
+    );
+    return;
+  }
+
+  if (adminPlayers.length === 0) {
+    drawText(
+      "No player accounts found.",
+      width / 2,
+      height / 2,
+      15,
+      "#ffffff",
+      "center"
+    );
+
+    return;
+  }
+
+  const totalPages = Math.ceil(
+    adminPlayers.length /
+    ADMIN_PLAYERS_PER_PAGE
+  );
+
+  adminPlayersPage = Math.max(
+    0,
+    Math.min(
+      adminPlayersPage,
+      totalPages - 1
+    )
+  );
+
+  const startIndex =
+    adminPlayersPage *
+    ADMIN_PLAYERS_PER_PAGE;
+
+  const visiblePlayers = adminPlayers.slice(
+    startIndex,
+    startIndex + ADMIN_PLAYERS_PER_PAGE
+  );
+
+  const compact = height < 740;
+  const rowHeight = compact ? 70 : 82;
+  const startY = compact ? 155 : 170;
+
+  visiblePlayers.forEach((account, index) => {
+    const y = startY + index * rowHeight;
+
+    ctx.fillStyle = "#151b15";
+    ctx.fillRect(
+      15,
+      y,
+      width - 30,
+      rowHeight - 8
+    );
+
+    ctx.strokeStyle = "#a78439";
+    ctx.lineWidth = 1;
+
+    ctx.strokeRect(
+      15,
+      y,
+      width - 30,
+      rowHeight - 8
+    );
+
+    drawText(
+      account.username,
+      26,
+      y + 20,
+      15,
+      "#e8c66d"
+    );
+
+    drawText(
+      `Coins: ${account.coins ?? 0}`,
+      26,
+      y + 39,
+      12,
+      "#ffffff"
+    );
+
+    drawText(
+      account.is_disabled
+        ? "LOCKED"
+        : "ACTIVE",
+      width - 26,
+      y + 20,
+      12,
+      account.is_disabled
+        ? "#ff7777"
+        : "#8ee29a",
+      "right"
+    );
+
+    drawText(
+      account.is_admin
+        ? "ADMIN"
+        : "PLAYER",
+      width - 26,
+      y + 39,
+      11,
+      "#bbbbbb",
+      "right"
+    );
+
+    if (
+      account.campaign_level !== undefined &&
+      account.campaign_level !== null
+    ) {
+      drawText(
+        `Campaign: ${account.campaign_level}`,
+        26,
+        y + 57,
+        11,
+        "#a5c9a5"
+      );
+    }
+  });
+
+  const navigationY = Math.min(
+    height - 120,
+    startY +
+      ADMIN_PLAYERS_PER_PAGE * rowHeight +
+      8
+  );
+
+  if (totalPages > 1) {
+    drawText(
+      `Page ${adminPlayersPage + 1} of ${totalPages}`,
+      width / 2,
+      navigationY - 10,
+      13,
+      "#ffffff",
+      "center"
+    );
+
+    if (adminPlayersPage > 0) {
+      addButton(
+        "PREVIOUS PAGE",
+        navigationY + 5,
+        () => {
+          adminPlayersPage--;
+        }
+      );
+    }
+
+    if (
+      adminPlayersPage <
+      totalPages - 1
+    ) {
+      addButton(
+        "NEXT PAGE",
+        navigationY + 55,
+        () => {
+          adminPlayersPage++;
+        }
+      );
+    }
+  }
+}
+
+// ==========================================
 // ADMINISTRATOR DASHBOARD
 // ==========================================
 
 function drawAdminDashboard(): void {
   if (!isAdministrator()) {
+    resetAdminPlayerData();
     gameScreen = "menu";
     return;
   }
@@ -1789,11 +2269,7 @@ function drawAdminDashboard(): void {
       addButton(
         item.label,
         startY + index * 54,
-        () => {
-          if (isAdministrator()) {
-            adminSection = item.section;
-          }
-        }
+        () => openAdminSection(item.section)
       );
     });
 
@@ -1801,7 +2277,9 @@ function drawAdminDashboard(): void {
       "RETURN TO MAIN MENU",
       Math.min(
         height - 75,
-        startY + sections.length * 54 + 12
+        startY +
+          sections.length * 54 +
+          12
       ),
       closeAdminDashboard
     );
@@ -1809,11 +2287,42 @@ function drawAdminDashboard(): void {
     return;
   }
 
+  if (adminSection === "players") {
+    drawText(
+      "PLAYER ACCOUNT DIRECTORY",
+      width / 2,
+      137,
+      15,
+      "#ffffff",
+      "center"
+    );
+
+    drawAdminPlayerList();
+
+    addButton(
+      "REFRESH PLAYER LIST",
+      height - 115,
+      () => {
+        void loadAdminPlayers();
+      }
+    );
+
+    addButton(
+      "BACK TO ADMIN MENU",
+      height - 62,
+      () => {
+        resetAdminPlayerData();
+        adminSection = "home";
+      }
+    );
+
+    return;
+  }
+
   const titles: Record<
-    Exclude<AdminSection, "home">,
+    Exclude<AdminSection, "home" | "players">,
     string
   > = {
-    players: "PLAYER ACCOUNTS",
     coins: "GRANT PLAYER COINS",
     locks: "ACCOUNT ACCESS CONTROL",
     accounts: "EDIT PLAYER ACCOUNTS",
@@ -1849,7 +2358,10 @@ function drawAdminDashboard(): void {
 
   addButton(
     "BACK TO ADMIN MENU",
-    Math.min(height - 85, height / 2 + 65),
+    Math.min(
+      height - 85,
+      height / 2 + 65
+    ),
     () => {
       adminSection = "home";
     }
@@ -1896,7 +2408,9 @@ function drawShop(): void {
     "BACK",
     Math.min(
       height - 65,
-      startY + upgradeInfo.length * gap + 5
+      startY +
+        upgradeInfo.length * gap +
+        5
     ),
     () => {
       gameScreen = shopReturn;
@@ -1905,14 +2419,8 @@ function drawShop(): void {
 }
 
 // ==========================================
-// 
-// ==========================================
-
-// ==========================================
-// APEX ZOMBIE SURVIVAL
-// ==========================================
-
 // CAMPAIGN COMPLETION SCREEN
+// ==========================================
 
 function drawComplete(): void {
   drawPanel("LEVEL COMPLETED!");
@@ -2184,8 +2692,6 @@ function drawGame(): void {
 
   drawPlayer();
 
-  // HUD BACKGROUND
-
   ctx.fillStyle = "rgba(8,14,10,0.84)";
   ctx.fillRect(0, 0, width, 115);
 
@@ -2256,8 +2762,6 @@ function drawGame(): void {
     );
   }
 
-  // PAUSE BUTTON
-
   const pause = pauseButtonBounds();
 
   ctx.fillStyle = "#a78439";
@@ -2286,8 +2790,6 @@ function drawGame(): void {
   );
 
   drawJoystick();
-
-  // ENDLESS WAVE BREAK
 
   if (waveBreak > 0) {
     ctx.fillStyle = "rgba(0,0,0,0.7)";
@@ -2423,8 +2925,19 @@ onProfileChange(profile => {
   const nextPlayerId = profile?.id ?? null;
 
   if (nextPlayerId === activeSaveOwner) {
+    if (
+      !profile?.is_admin &&
+      gameScreen === "admin"
+    ) {
+      resetAdminPlayerData();
+      adminSection = "home";
+      gameScreen = "menu";
+    }
+
     return;
   }
+
+  resetAdminPlayerData();
 
   gameScreen = "menu";
   adminSection = "home";
