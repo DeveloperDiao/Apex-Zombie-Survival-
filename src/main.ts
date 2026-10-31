@@ -8,6 +8,7 @@ import {
 } from "./auth-ui";
 
 import { supabase } from "./supabase";
+import { getServerGameProgress } from "./game-progress";
 
 type Zombie = {
   x: number;
@@ -216,6 +217,40 @@ let walletLoading = false;
 let walletError = "";
 let walletRequestVersion = 0;
 
+// Read-only diagnostic: does not overwrite local saves or coins.
+let progressTestStatus = "NOT TESTED";
+let progressTestVersion = 0;
+
+async function testServerProgress(playerId: string): Promise<void> {
+  const version = ++progressTestVersion;
+  progressTestStatus = "CHECKING...";
+
+  try {
+    const result = await getServerGameProgress();
+    if (
+      version !== progressTestVersion ||
+      currentPlayer()?.id !== playerId ||
+      activeSaveOwner !== playerId
+    ) return;
+
+    progressTestStatus = "CONNECTED - READ ONLY";
+    console.info("APEX progress test (read only)", {
+      coins: result.player.coins,
+      campaignLevel: result.player.campaign_level,
+      bestEndless: result.player.best_endless,
+      upgrades: result.upgrades
+    });
+  } catch (error) {
+    if (
+      version !== progressTestVersion ||
+      currentPlayer()?.id !== playerId
+    ) return;
+    progressTestStatus = "FAILED - TAP TO RETRY";
+    console.error("APEX progress test failed:", error);
+  }
+}
+
+
 let adminSection: AdminSection = "home";
 
 let adminPlayers: AdminPlayer[] = [];
@@ -412,6 +447,7 @@ function activatePlayerSave(profile: {
     save.coins = 0;
 
     void loadPlayerWallet();
+    void testServerProgress(profile.id);
   } catch (error) {
     activeSaveOwner = null;
     save = defaultSave();
@@ -998,6 +1034,7 @@ function startGame(mode: GameMode): void {
 
   player.x = width / 2;
   player.y = height / 2;
+/// I FOUND YOU ALREADY ;)
 
   player.maxHp = maxHealth();
   player.hp = player.maxHp;
@@ -1219,7 +1256,7 @@ function update(dt: number): void {
     keys.has("s") ||
     keys.has("arrowdown")
   ) {
-    dy++;
+    dy--;
   }
 
   if (joystick.active) {
@@ -1768,6 +1805,15 @@ function drawMenu(): void {
   }
 
   drawText(
+    `SERVER TEST: ${progressTestStatus}`,
+    width / 2,
+    137,
+    11,
+    progressTestStatus.startsWith("CONNECTED") ? "#8ee29a" : "#e8c66d",
+    "center"
+  );
+
+  drawText(
     `Campaign Level: ${save.campaignLevel}`,
     width / 2,
     155,
@@ -2027,6 +2073,8 @@ function drawAdminPlayerList(): void {
       11,
       "#bbbbbb",
       "right"
+    );
+/// YOU PICKED THE WRONG DEV:)
     );
 
     if (
@@ -3006,6 +3054,8 @@ function frame(timestamp: number): void {
 onProfileChange(profile => {
   if (!profile || profile.is_disabled) {
     invalidateWallet();
+    progressTestVersion++;
+    progressTestStatus = "NOT TESTED";
 
     activeSaveOwner = null;
     save = defaultSave();
